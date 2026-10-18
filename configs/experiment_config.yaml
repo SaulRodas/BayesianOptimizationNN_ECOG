@@ -1,0 +1,225 @@
+# Configuracion central declarativa: NO EJECUTAR OPTUNA hasta completar todos los gates.
+# Los valores null son decisiones pendientes y deben causar error en las fases
+# que los requieren; no reemplazarlos silenciosamente por defaults.
+
+schema_version: 1
+project:
+  name: TT_ECoG_FingerFlexion
+  dataset: BCI_Competition_IV_Dataset_4
+  subjects: [S1, S2, S3]
+  execution_environment: colab_pro
+  seed_base: 42
+  development_only_until_final_evaluation: true
+
+paths:
+  raw_dir: raw  # Relativo a persistent_storage_dir, en Drive
+  processed_dir: data/processed
+  manifests_dir: data/manifests
+  results_dir: results
+  test_labels_dir: null  # Resolucion permitida SOLO en evaluacion final
+  persistent_storage_dir: TT_ECoG  # Relativo al directorio MyDrive montado
+
+raw_data:
+  ecog_fs_hz: 1000
+  glove_fs_effective_hz: 25
+  expected_channels_nominal:
+    S1: 62
+    S2: 48
+    S3: 64
+  n_fingers: 5
+  train_file_template: 'sub{subject_number}_comp.mat'
+  train_ecog_key: train_data
+  train_glove_key: train_dg
+  test_ecog_key: test_data
+  test_labels_file_template: 'sub{subject_number}_testlabels.mat'
+  test_labels_key: test_dg
+  io_policy: original_readonly
+
+quality_control:
+  detection_stage: eda
+  application_stage: preprocessing
+  qc_decisions_file: null  # Generar con EDA y aprobar antes de producir datos definitivos
+  approval_required: true
+  use_labels_for_detection: false
+  detection_methods: [robust_amplitude, discontinuity, flatline, spectral, event_grouping]
+  thresholds:
+    robust_z: null  # Establecer y registrar en EDA; no ajustar por Pearson
+    jump_z: null
+    flatline_fraction: null
+    max_bad_fraction: null
+    spectral_z: null
+    spectral_min_duration_s: null
+  analysis:  # Resoluciones descriptivas; no son umbrales de exclusion
+    window_seconds: 1.0
+    psd_window_seconds: 2.0
+    psd_overlap_fraction: 0.5
+    line_half_width_hz: 1.0
+    event_merge_gap_seconds: 0.05
+    numerical_epsilon: 1.0e-12
+    plot_max_points: 4000
+  allow_local_repair_only_if_approved: true
+  index_convention: zero_based
+
+signal:
+  target_fs_hz: 100
+  bandpass_hz: [40, 200]
+  notch_hz: [60, 120, 180]
+  common_reference: common_median_instantaneous
+  no_global_temporal_zscore: true
+  filtering:
+    segmentwise: true
+    phase: zero
+    design_and_length: derived_from_library_and_reported
+    preserve_edge_masks: true
+  morlet:
+    output: power
+    spacing: log
+    n_frequencies: 40
+    freq_range_hz: [40, 200]
+    n_cycles: 7
+    zero_mean: true
+  resample:
+    source_fs_hz: 1000
+    target_fs_hz: 100
+    antialias: true
+    preserve_timestamps: true
+  glove:
+    effective_fs_hz: 25
+    target_fs_hz: 100
+    interpolation: cubic
+    validate_stored_1khz_upsampling: true
+  temporal_alignment:
+    delay_ms: 200
+    delay_samples_at_target_fs: 20
+    direction: ecog_t_to_flexion_t_plus_delay
+    prevent_fold_boundary_crossing: true
+
+validation:
+  design: purged_blocked_cv
+  n_base_blocks: 5
+  block_names: [B1, B2, B3, B4, B5]
+  stage1_validation_blocks: [B2, B4]
+  stage2_validation_blocks: [B1, B2, B3, B4, B5]
+  purge_samples_at_100hz: null  # Aprobar luego de V04-V09; 256 solo candidato, no decision
+  purge_candidate_for_tests: 256
+  train_window_samples: 256
+  train_stride_samples: 1
+  inference_window_samples: 256
+  inference_stride_samples: 64
+  allow_windows_across_gaps: false
+  score_reconstruction: overlap_add
+  coverage_policy: full_valid_timestamps_required
+
+scaling:
+  ecog:
+    type: robust
+    quantile_range_percent: [10, 90]
+    unit_variance: true
+    fit_only_on: fold_train
+    feature_axis: channel_frequency
+  targets:
+    type: minmax
+    feature_range: [0, 1]
+    fit_only_on: fold_train
+    inverse_transform_for_error_metrics: true
+
+model:
+  name: unet1d
+  input_frequency_bins: 40
+  output_channels: 5
+  reference:
+    encoder_levels: 5
+    base_filters: 64
+    encoder_kernels: [7, 7, 5, 5, 5]
+    encoder_dilations: [1, 2, 3, 1, 2]
+    encoder_strides: [2, 2, 2, 2, 2]
+    channel_multipliers: [1, 1, 2, 4, 8, 8]
+  normalization: batchnorm1d
+  activation: gelu
+  dropout: 0.3
+  encoder: dilated_conv1d_with_temporal_downsampling
+  decoder: interpolate_linear_plus_conv1d
+  skip_connection: concat
+  interpolate_to_skip_length: true
+  final_conv_kernel: 1
+
+training:
+  optimizer: adamw
+  scheduler: none
+  adamw_weight_decay_policy: all_trainable_parameters
+  reference_learning_rate: 0.0000842
+  reference_weight_decay: 0.0001
+  loss:
+    name: mse_plus_temporal_cosine
+    mse_weight: 0.5
+    cosine_weight: 0.5
+    cosine_axis: temporal_per_finger
+    eps: 1.0e-8
+  batch_size: null  # Definir con memoria medida en la GPU real de Colab Pro
+  batch_size_initial_candidate: 128
+  search_epochs: null  # DECISION POSTERIOR tras estudio de convergencia
+  final_max_epochs: null  # DECISION POSTERIOR, separada de search_epochs
+  search_early_stopping: false
+  search_checkpoint_selection: last_epoch
+  search_checkpoint_metric: val_pearson_full
+  final_early_stopping: true
+  final_early_stopping_patience: null  # Definir con validacion de desarrollo
+  final_early_stopping_min_delta: null
+  final_checkpoint_metric: val_pearson_full
+  final_retrain_full_development_after_epoch_selection: true
+  common_seeds_between_configurations: true
+
+metrics:
+  objective: pearson_macro_five_fingers
+  pearson_scope: reconstructed_full_valid_trajectories
+  pearson_constant_series_policy: mark_invalid
+  secondary: [pearson_per_finger, mse, rmse, ccc, val_loss]
+  metrics_include_train_and_val_curves: true
+  selection_is_multiobjective: false
+
+optimization:
+  algorithm: optuna_tpe
+  study_direction: maximize
+  persistent_studies_required: true
+  stage1:
+    trials_per_subject: 20
+    validation_blocks: [B2, B4]
+    n_startup_trials: 5
+    search:
+      learning_rate: {type: float_log, min: 1.0e-5, max: 1.0e-3}
+      weight_decay: {type: float_log, min: 1.0e-6, max: 1.0e-2}
+  stage2:
+    trials_per_subject: 10
+    validation_blocks: [B1, B2, B3, B4, B5]
+    n_startup_trials: 3
+    fix_learning_rate_and_weight_decay_from_stage1: true
+    kernel_construction: '[7,7] + [kernel_size] * (encoder_levels - 2)'
+    filters_construction: '[f,f,2*f,4*f,8*f,8*f][:encoder_levels+1]'
+    search:
+      kernel_size: [3, 5, 7]
+      encoder_levels: [3, 4, 5]
+      base_filters: [32, 64, 96]
+    enqueue_reference_architecture_within_budget:
+      kernel_size: 5
+      encoder_levels: 5
+      base_filters: 64
+  budgets:
+    stage1_total_fits: 120
+    stage2_total_fits: 150
+    combined_search_fits: 270
+
+verification:
+  required_test_ids: [V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V14]
+  status: pending
+  all_pass_required: true
+  automatically_freeze_on_all_pass: false  # Emitir manifiesto, solicitar aprobacion
+  report_dir: results/verification
+  approved_manifest_file: null
+
+final_evaluation:
+  variants: [baseline_A, training_optimized_B, architecture_optimized_C]
+  train_subject_specific: true
+  test_labels_access_stage: final_only
+  reuse_preprocessing_for_all_variants: true
+  identical_metric_definitions: true
+  require_locked_protocol: true

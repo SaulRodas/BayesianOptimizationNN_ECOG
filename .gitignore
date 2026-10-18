@@ -1,0 +1,49 @@
+# Datos y resultados experimentales
+/data/raw/*
+/data/processed/*
+/data/manifests/*
+/raw/
+/TT_ECoG/
+/results/*
+!/results/README.md
+!/data/raw/.gitkeep
+!/data/processed/.gitkeep
+!/data/manifests/.gitkeep
+
+# Pesos, modelos, estudios y material privado
+*.mat
+*.npy
+*.npz
+*.ckpt
+*.pt
+*.pth
+*.pkl
+*.joblib
+*.db
+*.sqlite
+*.sqlite3
+*.zip
+*.tar
+*.tar.gz
+*.env
+.env*
+!.env.example
+
+# Python, notebook y herramientas
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+build/
+dist/
+*.egg-info/
+
+# Credenciales y reportes no publicos
+*credentials*
+*secret*
+*token*
+*.log

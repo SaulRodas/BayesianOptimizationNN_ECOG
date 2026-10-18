@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "status": "pending",
+  "created_at_utc": null,
+  "reviewed_by": null,
+  "approval_at_utc": null,
+  "qc_config_sha256": null,
+  "subjects": {
+    "S1": {
+      "status": "pending",
+      "original_channel_count": null,
+      "raw_data_sha256": null,
+      "excluded_channel_indices_0based": [],
+      "intervals": [],
+      "evidence_paths": [],
+      "notes": null
+    },
+    "S2": {
+      "status": "pending",
+      "original_channel_count": null,
+      "raw_data_sha256": null,
+      "excluded_channel_indices_0based": [],
+      "intervals": [],
+      "evidence_paths": [],
+      "notes": null
+    },
+    "S3": {
+      "status": "pending",
+      "original_channel_count": null,
+      "raw_data_sha256": null,
+      "excluded_channel_indices_0based": [],
+      "intervals": [],
+      "evidence_paths": [],
+      "notes": null
+    }
+  }
+}
