@@ -1,13 +1,49 @@
+import json
 from pathlib import Path
 
 import numpy as np
 import pytest
 from scipy.io import savemat
+import yaml
 
 from tt_ecog.config import load_config
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+# --------------------------------------------------------------------------- V01-V14 evidence
+
+def pytest_addoption(parser):
+    parser.addoption("--verification-json", default=None,
+                     help="Write the outcome of every test and its verification ids (V01-V14) to this JSON file")
+
+
+class VerificationRecorder:
+    """Outcome per test (passed/failed/skipped over all phases) and its ``verification`` marker ids."""
+
+    def __init__(self, path: str):
+        self.path, self.ids, self.outcomes = Path(path), {}, {}
+
+    def pytest_collection_modifyitems(self, items):
+        for item in items:
+            self.ids[item.nodeid] = sorted({i for m in item.iter_markers("verification") for i in m.args})
+
+    def pytest_runtest_logreport(self, report):
+        if report.when == "call" or report.outcome != "passed":
+            if self.outcomes.get(report.nodeid, "passed") == "passed":
+                self.outcomes[report.nodeid] = report.outcome
+
+    def pytest_sessionfinish(self, session, exitstatus):
+        tests = {node: {"ids": ids, "outcome": self.outcomes.get(node, "not_run")} for node, ids in self.ids.items()}
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.write_text(json.dumps({"exitstatus": int(exitstatus), "tests": tests}, indent=1), encoding="utf-8")
+
+
+def pytest_configure(config):
+    path = config.getoption("--verification-json")
+    if path:
+        config.pluginmanager.register(VerificationRecorder(path), "tt-ecog-verification")
 
 
 @pytest.fixture
@@ -75,3 +111,59 @@ def config_copy(tmp_path):
     (project / "configs").mkdir(parents=True)
     shutil.copyfile(ROOT / "configs/experiment_config.yaml", project / "configs/experiment_config.yaml")
     return project / "configs/experiment_config.yaml"
+
+
+# --------------------------------------------------------------------------- step 2 on synthetic data
+
+EDA_RUN_ID = "20260101T000000Z_abcdef"
+SUBJECTS = ("S1", "S2", "S3")
+
+
+def project(base, reference_run=EDA_RUN_ID, **validation):
+    """Project shell whose YAML points to a synthetic EDA run (and optional validation overrides)."""
+    (base / "p/configs").mkdir(parents=True)
+    data = yaml.safe_load((ROOT / "configs/experiment_config.yaml").read_text(encoding="utf-8"))
+    data["channels"]["reference_run"] = reference_run
+    data["validation"].update(validation)
+    path = base / "p/configs/experiment_config.yaml"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    return path
+
+
+def write_eda_evidence(config, drive, raw_paths, run_id=EDA_RUN_ID):
+    """Minimal COMPLETE EDA run folder describing ``raw_paths``."""
+    from tt_ecog.io import sha256_file
+    from tt_ecog.reporting import write_json
+    run = config.path(drive, "eda_dir") / run_id
+    (run / "fig").mkdir(parents=True)
+    for subject in SUBJECTS:
+        for entry in config.channel_exclusions(subject):
+            (run / entry["evidence_figure"]).write_bytes(b"evidence " + entry["evidence_figure"].encode())
+    write_json(run / "run_summary.json", {"status": "COMPLETE", "test_accessed": False, "git_commit": "eda"})
+    write_json(run / "data_manifest.json", {s: {"ecog": {"sha256": sha256_file(p)}} for s, p in raw_paths.items()})
+    write_json(run / "effective_config.json", config.data)
+    write_json(run / "artifact_manifest.json", {"sha256": {
+        p.relative_to(run).as_posix(): sha256_file(p) for p in sorted(run.rglob("*")) if p.is_file()}})
+    return run
+
+
+@pytest.fixture(scope="session")
+def prepared(tmp_path_factory):
+    """Step 2 over three synthetic 60 s subjects (blocks of 12 s) with a synthetic EDA reference."""
+    from tt_ecog.io import sha256_file
+    from tt_ecog.prep import run_prep
+    base = tmp_path_factory.mktemp("prep")
+    config_path = project(base)
+    config = load_config(config_path)
+    drive = base / "d"
+    config.path(drive, "raw_dir").mkdir(parents=True)
+    raw = {s: write_subject(drive, config, s, n=60000) for s in SUBJECTS}
+    originals = {s: sha256_file(p) for s, p in raw.items()}
+    write_eda_evidence(config, drive, raw)
+    output = run_prep(config_path, drive)
+    summary = json.loads((output / "run_summary.json").read_text(encoding="utf-8"))
+    storage = config.storage_root(drive)
+    return {"config": config, "config_path": config_path, "drive": drive, "raw": raw, "originals": originals,
+            "output": output, "summary": summary, "base": base,
+            "pipeline": storage / summary["pipeline_dir"] if summary["pipeline_dir"] else None,
+            "folds": storage / summary["fold_set_dir"] if summary["fold_set_dir"] else None}

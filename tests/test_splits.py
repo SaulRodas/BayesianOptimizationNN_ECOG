@@ -3,6 +3,8 @@ import pytest
 
 from tt_ecog.splits import chronological_blocks, check_purge, make_folds, train_eligibility
 
+
+pytestmark = pytest.mark.verification("V04")
 NAMES = ["B1", "B2", "B3", "B4", "B5"]
 DELAY = 20
 

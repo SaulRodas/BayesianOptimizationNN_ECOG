@@ -23,6 +23,7 @@ def tone(freq, n, fs=FS, amplitude=1.0):
 
 # ------------------------------------------------------------------ channels
 
+@pytest.mark.verification("V02")
 def test_exclusion_reindexes_and_copies():
     x = np.repeat(np.arange(6, dtype=float)[:, None], 10, axis=1)
     x.setflags(write=False)
@@ -36,12 +37,14 @@ def test_exclusion_reindexes_and_copies():
         cmap.new_index(4)
 
 
+@pytest.mark.verification("V02")
 @pytest.mark.parametrize("excluded", [[1, 1], [-1], [6], [0, 1, 2, 3, 4, 5], [True]])
 def test_invalid_exclusions_rejected(excluded):
     with pytest.raises(ValueError):
         pp.channel_map("S1", 6, excluded)
 
 
+@pytest.mark.verification("V02")
 def test_spec_channel_counts(config):
     counts = {s: pp.PreprocessingSpec.from_config(config, s).channels.n_kept for s in ("S1", "S2", "S3")}
     assert counts == {"S1": 61, "S2": 46, "S3": 64}
@@ -49,6 +52,7 @@ def test_spec_channel_counts(config):
 
 # ------------------------------------------------------------------ CMR
 
+@pytest.mark.verification("V03")
 @pytest.mark.parametrize("n_channels", [5, 6])
 def test_cmr_matches_numpy_median_and_chunks(n_channels):
     x = np.random.default_rng(0).normal(size=(n_channels, 1003))
@@ -57,6 +61,7 @@ def test_cmr_matches_numpy_median_and_chunks(n_channels):
     np.testing.assert_allclose(pp.common_median_reference(x, chunk_samples=17), expected, atol=1e-12)
 
 
+@pytest.mark.verification("V02", "V03")
 def test_cmr_is_instantaneous_and_robust_to_one_extreme_channel():
     x = np.random.default_rng(1).normal(size=(7, 500))
     base = pp.common_median_reference(x)
@@ -71,6 +76,7 @@ def test_cmr_is_instantaneous_and_robust_to_one_extreme_channel():
 
 # ------------------------------------------------------------------ FIR
 
+@pytest.mark.verification("V09")
 def test_bandpass_and_notch_designs(spec):
     assert spec.bandpass.n_taps == 331 and spec.notch.n_taps == 1651
     assert spec.fir.n_taps == 1981 and spec.fir.half_support == 990
@@ -81,6 +87,7 @@ def test_bandpass_and_notch_designs(spec):
     np.testing.assert_allclose(spec.fir.taps, spec.fir.taps[::-1])
 
 
+@pytest.mark.verification("V09")
 def test_apply_fir_keeps_only_in_band_tone(spec):
     n = 20000
     x = tone(100, n) + tone(10, n) + tone(60, n) + tone(300, n)
@@ -89,6 +96,7 @@ def test_apply_fir_keeps_only_in_band_tone(spec):
     np.testing.assert_allclose(y[interior], tone(100, n)[interior], atol=0.02)
 
 
+@pytest.mark.verification("V09")
 def test_apply_fir_matches_convolution_and_support(spec):
     rng = np.random.default_rng(2)
     x = rng.normal(size=(2, 6000))
@@ -106,6 +114,7 @@ def test_apply_fir_matches_convolution_and_support(spec):
     assert np.argmax(np.abs(response)) == 4000
 
 
+@pytest.mark.verification("V07", "V08")
 def test_segments_are_filtered_independently(spec):
     rng = np.random.default_rng(3)
     a, b = rng.normal(size=5000), rng.normal(size=5000)
@@ -118,12 +127,14 @@ def test_segments_are_filtered_independently(spec):
 
 # ------------------------------------------------------------------ Morlet
 
+@pytest.mark.verification("V09")
 def test_morlet_frequency_grid(spec):
     np.testing.assert_allclose(spec.freqs, np.geomspace(40, 200, 40))
     support = pp.morlet_half_support(spec.freqs, spec.n_cycles, FS)
     assert support[0] == max(support) and 135 <= support[0] <= 140
 
 
+@pytest.mark.verification("V09")
 def test_morlet_tone_peak_and_impulse_localization(spec):
     n = 4000
     x = np.vstack([tone(spec.freqs[20], n), np.zeros(n)])
@@ -136,6 +147,7 @@ def test_morlet_tone_peak_and_impulse_localization(spec):
     assert constant[0, :, 500:3500].max() < 1e-10
 
 
+@pytest.mark.verification("V09")
 def test_morlet_per_channel_equals_single_call(spec):
     x = np.random.default_rng(4).normal(size=(3, 3000))
     joint = pp.morlet_power(x, FS, spec.freqs, spec.n_cycles, True)
@@ -145,6 +157,7 @@ def test_morlet_per_channel_equals_single_call(spec):
 
 # ------------------------------------------------------------------ decimation
 
+@pytest.mark.verification("V09")
 def test_antialias_design_and_alias_rejection(spec):
     aa = spec.antialias
     assert aa.n_taps % 2 == 1 and 200 <= aa.n_taps <= 300
@@ -164,6 +177,7 @@ def test_antialias_design_and_alias_rejection(spec):
     np.testing.assert_allclose(y[interior], np.sin(2 * np.pi * 5 * t100)[interior], atol=0.01)
 
 
+@pytest.mark.verification("V09")
 def test_decimation_timing_on_ramp(spec):
     ramp = np.arange(5000, dtype=float)
     y = pp.decimate(ramp, spec.antialias, 10)
@@ -172,6 +186,7 @@ def test_decimation_timing_on_ramp(spec):
     np.testing.assert_allclose(pp.output_times(5000, 10, FS)[:3], [0, 0.01, 0.02])
 
 
+@pytest.mark.verification("V09", "V11")
 def test_morlet_power_decimated_shape_and_report(spec):
     x = np.random.default_rng(5).normal(size=(2, 3000))
     power, report = pp.morlet_power_decimated(x, spec)
@@ -179,6 +194,7 @@ def test_morlet_power_decimated_shape_and_report(spec):
     assert report["total_values"] == power.size
 
 
+@pytest.mark.verification("V09")
 def test_support_report_is_informational(spec):
     report = pp.support_report(spec)
     assert report["total_half_support_samples_source"] == 990 + report["morlet_half_support_samples_source_max"] \
@@ -186,11 +202,13 @@ def test_support_report_is_informational(spec):
     assert report["total_half_support_samples_target"] < 256
 
 
+@pytest.mark.verification("V09")
 def test_measured_support_within_analytic(spec):
     result = pp.measured_support(spec, 1e-6)
     assert 0 < result["measured_half_support_target"] <= result["analytic"]["total_half_support_samples_target"]
 
 
+@pytest.mark.verification("V07", "V08", "V09")
 @pytest.mark.parametrize("n_source", [6000, 6007])
 def test_valid_columns_do_not_depend_on_data_outside_the_segment(spec, n_source):
     """A segment processed alone equals the same samples inside a longer record on
@@ -211,6 +229,7 @@ def test_valid_columns_do_not_depend_on_data_outside_the_segment(spec, n_source)
     assert not np.allclose(alone[:, :, 0], embedded[:, :, 0], rtol=1e-3)
 
 
+@pytest.mark.verification("V02")
 def test_segment_features_rejects_wrong_channel_count(spec):
     with pytest.raises(DataContractError):
         pp.segment_features(np.zeros((47, 3000)), spec)
@@ -226,6 +245,7 @@ def staircase(n, factor=40, phase=7, seed=6):
     return stored, samples
 
 
+@pytest.mark.verification("V06")
 def test_glove_staircase_detected_and_recovered():
     stored, _ = staircase(4000)
     info = pp.inspect_glove_storage(stored, 40)
@@ -236,6 +256,7 @@ def test_glove_staircase_detected_and_recovered():
     assert set(np.unique(info["run_lengths"][1:-1] % 40)) == {0}
 
 
+@pytest.mark.verification("V06")
 def test_glove_linear_upsampling_detected():
     knots = np.arange(3, 4000, 40)
     rng = np.random.default_rng(7)
@@ -245,6 +266,7 @@ def test_glove_linear_upsampling_detected():
     assert info["method"] == "linear" and info["phase"] == 3
 
 
+@pytest.mark.verification("V06")
 def test_unknown_glove_storage_raises():
     noise = np.random.default_rng(8).normal(size=(5, 4000))
     info = pp.inspect_glove_storage(noise, 40)
@@ -253,6 +275,7 @@ def test_unknown_glove_storage_raises():
         pp.recover_glove_samples(noise, 40, info["phase"], FS, info)
 
 
+@pytest.mark.verification("V06")
 def test_effective_glove_on_both_storage_grids(spec):
     stored, samples = staircase(8000, phase=0)
     info = pp.glove_storage_inspection(stored, 1000.0, spec)
@@ -267,6 +290,7 @@ def test_effective_glove_on_both_storage_grids(spec):
         pp.glove_storage_inspection(effective, 100.0, spec)
 
 
+@pytest.mark.verification("V04", "V06")
 def test_segment_glove_uses_only_absolute_knots_inside_the_segment(spec):
     stored, _ = staircase(8000, phase=0)
     y25, knots = pp.effective_glove(stored, pp.glove_storage_inspection(stored, 1000.0, spec), spec)
@@ -284,6 +308,7 @@ def test_segment_glove_uses_only_absolute_knots_inside_the_segment(spec):
         pp.segment_glove(y25, knots, 0, 100, spec)
 
 
+@pytest.mark.verification("V06")
 def test_cubic_interpolation_interior_and_no_extrapolation():
     t25 = np.arange(0, 4, 0.04)
     y25 = np.vstack([np.sin(2 * np.pi * 1 * t25)] * 5)
@@ -298,6 +323,7 @@ def test_cubic_interpolation_interior_and_no_extrapolation():
 
 # ------------------------------------------------------------------ alignment
 
+@pytest.mark.verification("V06")
 def test_delay_pairs_ecog_t_with_flexion_t_plus_delay():
     x = np.zeros((2, 100))
     y = np.zeros((5, 100))
@@ -317,12 +343,14 @@ def test_delay_pairs_ecog_t_with_flexion_t_plus_delay():
 
 # ------------------------------------------------------------------ blocks and scalers
 
+@pytest.mark.verification("V04")
 def test_five_chronological_blocks():
     blocks = chronological_blocks(400000, ["B1", "B2", "B3", "B4", "B5"], 10)
     assert [(b.start_source, b.stop_source) for b in blocks] == [(k * 80000, (k + 1) * 80000) for k in range(5)]
     assert all(b.start_source == b.start_target * 10 for b in blocks)
 
 
+@pytest.mark.verification("V05")
 def test_scaler_factories_and_reshape(config):
     scaler = pp.make_feature_scaler(config)
     assert scaler.quantile_range == (10.0, 90.0) and scaler.unit_variance is True
@@ -333,6 +361,7 @@ def test_scaler_factories_and_reshape(config):
     np.testing.assert_array_equal(pp.matrix_to_features(matrix, 2, 3), features)
 
 
+@pytest.mark.verification("V05", "V11")
 def test_restored_scalers_match_the_fitted_ones(config):
     rng = np.random.default_rng(10)
     x = rng.lognormal(size=(500, 12))
@@ -349,6 +378,7 @@ def test_restored_scalers_match_the_fitted_ones(config):
         pp.restore_feature_scaler(config, fitted_x.center_, fitted_x.scale_[:-1])
 
 
+@pytest.mark.verification("V14")
 def test_preprocessing_does_not_depend_on_eda():
     tree = ast.parse((ROOT / "src/tt_ecog/preprocessing.py").read_text(encoding="utf-8"))
     imported = {node.module or "" for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}

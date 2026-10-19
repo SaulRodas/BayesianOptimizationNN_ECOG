@@ -18,7 +18,9 @@ Hecho por bloque: B1–B5 se procesan de forma independiente, la purga se aplica
 
 Implementar `02_preprocesamiento_ecog.ipynb` y completar `splits.py` y `datasets.py`, **reutilizando** las primitivas de `tt_ecog.preprocessing` (no reimplementarlas). Aplicar la exclusión de canales desde datos crudos antes de la CMR, procesar por segmentos independientes de cada fold con guardas, alinear ECoG(t) con flexión(t+0.2 s), interpolar el guante por segmento, generar etiquetas válidas y escaladores por fold sin fugas, y persistir arrays, máscaras, escaladores y manifiestos (`channel_map.json`, `filter_support.json`, `split_manifest.json`).
 
-## Tercer encargo: verificación
+## Tercer encargo: verificación — IMPLEMENTADO (v0.5.0), pendiente la corrida real y la aprobación de la purga
+
+Hecho: U-Net mínima con los detalles elegidos por la persona usuaria, pérdida, métricas, overlap-add, `tt_ecog.verification` y notebook 03. Ver la entrada v0.5.0 de `docs/experimental_log.md`. Encargo original:
 
 Primero implementar el modelo U-Net parametrizable mínimo y funciones de loss/métricas necesarios para V13-V14, **sin entrenar ni ejecutar Optuna**. Después implementar `03_verificacion_pipeline.ipynb` y pruebas V01-V14. Si una prueba falla, corregir el componente y volver a comprobarlo. Reportar `verification_report.json`, `verification_summary.md` y manifiesto con hashes. Marcar como BLOQUEADO cualquier prueba dependiente de datos ausentes: nunca declarar PASS por omision.
 

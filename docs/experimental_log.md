@@ -127,3 +127,61 @@ Las incidencias descubiertas tras una congelacion invalidaran solamente los arte
   - ejecutar el notebook 02 en Colab;
   - registrar aquí `pipeline_hash`, `run_id` y SHA-256 de `processed_manifest.json` y `folds_manifest.json`;
   - después, el paso 3 (V01–V14), que decide la purga.
+
+## 2026-10-18 — Corrida real del paso 2
+
+- **Ejecución:** la persona usuaria corrió el notebook 02 en Colab, en el commit `7f5b45f`, sin cambios locales.
+  - Corrida `20261019T022241Z_90bd22`, estado `COMPLETE`.
+  - EDA de referencia `20261019T004831Z_3a68db` validada por la compuerta.
+- **Artefactos en Drive:**
+  - datos procesados: `data/processed/89ba1f9c12977498`;
+  - folds: `data/processed/89ba1f9c12977498/folds/purge_256_4e3d382b582e7c1c`, purga candidata 256 (`candidate_pending_V04_V09`).
+  - Los SHA-256 de `processed_manifest.json` y `folds_manifest.json` están en esas carpetas; el paso 3 los registra en su reporte.
+- **Resultados:**
+  - Cada bloque tiene X de forma `(61|46|64, 40, 7980)` con 7750 columnas válidas: 230 sin contexto ECoG completo y 3 sin flexión interpolada al final del bloque.
+  - Por fold: ~30 700–30 870 columnas de train, ~29 700–29 850 ventanas de train, 7750 columnas de validación y 119 ventanas de inferencia.
+  - Huecos efectivos: 381 muestras antes de validación y 361 después.
+  - Potencia negativa por rizado del antialias: ~1.65 % de los valores válidos (no se recorta).
+
+## 2026-10-18 — v0.5.0: Paso 3, U-Net mínima, pérdida, métricas y verificación V01–V14
+
+- **Etapa:** paso 3 (protocolo §6), solo implementación. Sin entrenamientos experimentales ni Optuna. La corrida real la ejecuta la persona usuaria en Colab con el notebook 03.
+- **Autor y control de versiones:**
+  - Claude (Claude Code), a petición de la persona usuaria.
+  - Base `7f5b45f`; cambios aún sin commit en esta entrada.
+- **Decisiones de arquitectura de la persona usuaria** (detalles abiertos en §7, fijados antes de V13 y registrados en `model.*` del YAML):
+  - Reducción canal×frecuencia: Conv1d(C·40 → f, kernel 3, compartida en el tiempo) → BN → GELU → Dropout 0.3.
+  - Encoder: Conv1d dilatada (stride 1, padding same, sin sesgo) → BN → GELU → Dropout → **MaxPool1d(2)**; el skip se toma antes de reducir.
+  - Decoder: **interpolación lineal al largo exacto del skip → Conv1d → BN → GELU → Dropout → concatenación del skip**; cabeza Conv1d(2f → 5, kernel 1).
+- **Elegido por Claude y pendiente de visto bueno** (también en el YAML):
+  - el decoder espeja los kernels del encoder sin dilatación (`decoder_dilation: 1`);
+  - el Dropout está en todos los bloques convolucionales;
+  - inicialización por defecto de PyTorch para todas las variantes.
+- **Pérdida y métricas:**
+  - Pérdida: el coseno temporal usa `sqrt(max(‖p‖²‖t‖², eps²))`, finito y con gradiente finito para ventanas nulas. Esto importa porque el MinMax deja dedos en reposo exactamente en 0.
+  - Métricas en numpy. Pearson es indefinido si la serie no es finita o si su STD ≤ `metrics.degenerate_std_relative` (1e-9) × máx|x|; en ese caso la evaluación queda inválida con diagnóstico y el macro es `None`.
+  - Errores en unidades originales tras la inversa del MinMax del fold.
+  - Overlap-add con pesos uniformes y error si falta cobertura.
+- **Verificación:**
+  - Cada V01–V14 tiene una parte con datos reales (`tt_ecog.verification.checks`) y pruebas sintéticas marcadas `@pytest.mark.verification("Vxx")`.
+  - Es PASS solo si pasan ambas (una omisión no cuenta).
+  - V07/V08 recalculan los bloques desde los `.mat` con impulsos de 1e6×máx|ECoG| y retenciones del guante desplazadas, y exigen igualdad bit a bit (`verification.isolation_tolerance: 0`) con una línea base de la misma sesión. También exigen que el bloque perturbado sí cambie.
+  - V11 compara lo persistido con lo recalculado (`reproducibility_rtol: 1e-6`).
+  - Con todo en PASS se emite `approved_pipeline_manifest.json` como candidato; no se congela nada automáticamente.
+- **Purga en dos rondas:**
+  1. Con la purga `null`, V04/V09 quedan `BLOCKED` con la evidencia. Con procesamiento por bloque, la purga mínima que aísla contextos y etiquetas es 0; con el candidato 256, el hueco efectivo mínimo es de 361 muestras.
+  2. La persona usuaria fija `purge_samples_at_100hz`; se rehacen los folds (notebook 02, sin reprocesar bloques) y se verifica de nuevo.
+  - Nunca se elige la purga por Pearson.
+- **Configuración:**
+  - `paths.verification_dir`, que reemplaza a `verification.report_dir`;
+  - claves fijas de `model`; `metrics.degenerate_std_relative`; tolerancias de `verification`;
+  - validación de los bloques `model`, `training.loss`, `metrics` y `verification`.
+  - Sin cambios en `signal`, exclusiones, bloques ni escalado: los datos del paso 2 siguen siendo válidos (mismo `pipeline_hash`).
+- **Entorno local:** PyTorch 2.14.1+cpu instalado con `uv` en `.venv`. El extra `model` de `pyproject.toml` declara torch. En Colab no se reinstala PyTorch.
+- **Pruebas:** 235 PASS y 1 SKIP (versión commiteada del notebook 03, aún inexistente), con `python -m pytest -q`, en 4 min 38 s en CPU local. Las 14 verificaciones sobre el paso 2 sintético dan PASS salvo V04/V09 `BLOCKED` (purga candidata); con purga aprobada, V04/V09 pasan sin reprocesar bloques. No equivalen a la corrida real de V01–V14.
+- **Pendiente:**
+  - commit + push;
+  - notebook 03 en Colab (primera ronda);
+  - decidir la purga;
+  - notebook 02 y notebook 03 (segunda ronda);
+  - aprobación explícita de la congelación.

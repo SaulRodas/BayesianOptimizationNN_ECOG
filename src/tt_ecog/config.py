@@ -58,7 +58,9 @@ def _interval(value: Any, name: str, *, ordered: bool = True) -> None:
         raise ConfigError(f"{name}: start must be lower than end")
 
 
-RESOLVABLE_PATHS = {"raw_dir", "processed_dir", "manifests_dir", "results_dir", "eda_dir", "preprocessing_dir"}
+RESOLVABLE_PATHS = {"raw_dir", "processed_dir", "manifests_dir", "results_dir", "eda_dir", "preprocessing_dir",
+                    "verification_dir"}
+VERIFICATION_IDS = [f"V{k:02d}" for k in range(1, 15)]
 
 
 @dataclass(frozen=True)
@@ -250,6 +252,53 @@ def _validate_scaling(scaling: dict) -> None:
         raise ConfigError("scaling.targets: MinMaxScaler [0, 1] on fold train is fixed")
 
 
+def _validate_model(model: dict, signal: dict) -> None:
+    fixed = {"name": "unet1d", "output_channels": 5, "normalization": "batchnorm1d", "activation": "gelu",
+             "dropout": 0.3, "decoder": "interpolate_linear_plus_conv1d", "skip_connection": "concat",
+             "interpolate_to_skip_length": True, "final_conv_kernel": 1, "temporal_downsampling": "maxpool1d",
+             "decoder_block_order": "interpolate_conv_norm_activation_dropout_concat", "decoder_dilation": 1,
+             "initialization": "pytorch_default"}
+    for key, value in fixed.items():
+        if model[key] != value:
+            raise ConfigError(f"model.{key}: expected {value!r}")
+    if model["input_frequency_bins"] != signal["morlet"]["n_frequencies"]:
+        raise ConfigError("model.input_frequency_bins must equal the Morlet frequency count")
+    kernel = model["spatial_reduce_kernel"]
+    if type(kernel) is not int or kernel < 1 or kernel % 2 == 0:
+        raise ConfigError("model.spatial_reduce_kernel: expected a positive odd integer")
+    ref = model["reference"]
+    if (ref["encoder_levels"] != 5 or ref["base_filters"] != 64 or ref["encoder_kernels"] != [7, 7, 5, 5, 5]
+            or ref["encoder_dilations"] != [1, 2, 3, 1, 2] or ref["encoder_strides"] != [2, 2, 2, 2, 2]
+            or ref["channel_multipliers"] != [1, 1, 2, 4, 8, 8]):
+        raise ConfigError("model.reference: the protocol reference U-Net (k=5, L=5, f=64) is fixed")
+
+
+def _validate_training_and_metrics(training: dict, metrics: dict) -> None:
+    loss = training["loss"]
+    if (loss["name"] != "mse_plus_temporal_cosine" or loss["mse_weight"] != 0.5 or loss["cosine_weight"] != 0.5
+            or loss["cosine_axis"] != "temporal_per_finger"):
+        raise ConfigError("training.loss: 0.5 MSE + 0.5 (1 - temporal cosine per finger) is fixed")
+    positive(loss["eps"], "training.loss.eps")
+    if (metrics["objective"] != "pearson_macro_five_fingers"
+            or metrics["pearson_scope"] != "reconstructed_full_valid_trajectories"
+            or metrics["pearson_constant_series_policy"] != "mark_invalid"
+            or metrics["selection_is_multiobjective"] is not False):
+        raise ConfigError("metrics: macro Pearson on reconstructed trajectories, undefined -> invalid, is fixed")
+    positive(metrics["degenerate_std_relative"], "metrics.degenerate_std_relative")
+    if metrics["degenerate_std_relative"] >= 1:
+        raise ConfigError("metrics.degenerate_std_relative must be < 1")
+
+
+def _validate_verification(verification: dict) -> None:
+    if verification["required_test_ids"] != VERIFICATION_IDS:
+        raise ConfigError("verification.required_test_ids must list V01-V14")
+    if verification["all_pass_required"] is not True or verification["automatically_freeze_on_all_pass"] is not False:
+        raise ConfigError("verification: every check must pass and freezing requires explicit approval")
+    positive(verification["isolation_tolerance"], "verification.isolation_tolerance", zero=True)
+    positive(verification["reproducibility_rtol"], "verification.reproducibility_rtol")
+    _positive_int(verification["architecture_batch_size"], "verification.architecture_batch_size")
+
+
 def load_config(path: str | Path) -> ExperimentConfig:
     path = Path(path).resolve()
     payload = path.read_bytes()
@@ -285,6 +334,9 @@ def load_config(path: str | Path) -> ExperimentConfig:
         _validate_eda(data["eda"])
         _validate_validation(data["validation"])
         _validate_scaling(data["scaling"])
+        _validate_model(data["model"], data["signal"])
+        _validate_training_and_metrics(data["training"], data["metrics"])
+        _validate_verification(data["verification"])
     except (KeyError, TypeError) as exc:
         raise ConfigError(f"Missing or malformed configuration: {exc}") from exc
     return ExperimentConfig(data, path, hashlib.sha256(payload).hexdigest())

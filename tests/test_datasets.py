@@ -5,6 +5,8 @@ from tt_ecog.datasets import contiguous_runs, inference_window_starts, n_windows
 
 L = 256
 
+pytestmark = pytest.mark.verification("V10")
+
 
 @pytest.mark.parametrize("length,stride,expected", [
     (L - 1, 1, 0), (L, 1, 1), (L + 1, 1, 2), (L + 63, 64, 1), (L + 64, 64, 2), (0, 1, 0)])
@@ -42,6 +44,7 @@ def test_training_windows_stay_inside_one_run():
     assert 405 in starts and not np.isin(np.arange(700, 900), starts).any()
 
 
+@pytest.mark.verification("V12")
 def test_inference_windows_cover_every_valid_column_with_an_end_anchor():
     mask = np.zeros(2000, dtype=bool)
     mask[100:1100] = True
@@ -56,6 +59,7 @@ def test_inference_windows_cover_every_valid_column_with_an_end_anchor():
     assert np.diff(starts[starts < 1100])[:-1].tolist() == [64] * (np.sum(starts < 1100) - 2)
 
 
+@pytest.mark.verification("V12")
 def test_inference_refuses_incomplete_coverage():
     with pytest.raises(ValueError, match="shorter"):
         inference_window_starts(two_runs(), L, 64)

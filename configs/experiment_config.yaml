@@ -18,6 +18,7 @@ paths:
   results_dir: results
   eda_dir: results/eda
   preprocessing_dir: results/preprocessing  # Evidencia de cada corrida del paso 2
+  verification_dir: results/verification  # Reportes V01-V14 del paso 3
   test_labels_dir: null  # Resolucion permitida SOLO en evaluacion final
   persistent_storage_dir: TT_ECoG  # Relativo al directorio MyDrive montado
 
@@ -183,6 +184,12 @@ model:
   skip_connection: concat
   interpolate_to_skip_length: true
   final_conv_kernel: 1
+  # Detalles fijados por la persona usuaria (2026-10-18) antes de V13:
+  spatial_reduce_kernel: 3  # Conv1d(C*40 -> f) compartida en el tiempo + BN + GELU + Dropout
+  temporal_downsampling: maxpool1d  # MaxPool1d(2) tras cada bloque del encoder; skip antes de reducir
+  decoder_block_order: interpolate_conv_norm_activation_dropout_concat
+  decoder_dilation: 1  # el decoder espeja los kernels del encoder, sin dilatacion
+  initialization: pytorch_default  # mismo criterio para todas las variantes
 
 training:
   optimizer: adamw
@@ -214,6 +221,7 @@ metrics:
   objective: pearson_macro_five_fingers
   pearson_scope: reconstructed_full_valid_trajectories
   pearson_constant_series_policy: mark_invalid
+  degenerate_std_relative: 1.0e-9  # STD <= 1e-9 * max|x|: serie casi constante, Pearson indefinido
   secondary: [pearson_per_finger, mse, rmse, ccc, val_loss]
   metrics_include_train_and_val_curves: true
   selection_is_multiobjective: false
@@ -254,8 +262,10 @@ verification:
   status: pending
   all_pass_required: true
   automatically_freeze_on_all_pass: false  # Emitir manifiesto, solicitar aprobacion
-  report_dir: results/verification
   approved_manifest_file: null
+  isolation_tolerance: 0.0  # V07/V08 en la misma sesion: valores validos identicos bit a bit
+  reproducibility_rtol: 1.0e-6  # V11: persistido frente a recalculado en otra sesion
+  architecture_batch_size: 2  # V13: forward/backward de prueba, no es el batch de entrenamiento
 
 final_evaluation:
   variants: [baseline_A, training_optimized_B, architecture_optimized_C]

@@ -6,6 +6,8 @@ from scipy.io import savemat
 from tt_ecog import io
 from conftest import write_subject
 
+pytestmark = pytest.mark.verification("V01")
+
 
 def test_selective_classic_read_and_hashes(config, data_root, monkeypatch):
     path = write_subject(data_root, config)

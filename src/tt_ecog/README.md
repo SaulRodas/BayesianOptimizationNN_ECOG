@@ -31,4 +31,17 @@
 - `eda`: orquestación (`start_run`, `load_subjects`, `finish_run`, `run_eda`, CLI `python -m tt_ecog.eda`), secciones `eda/sections/s01…s11` y `show()` para el notebook. `eda/comparators.py` contiene alternativas solo de contraste (CAR, submuestreo directo, interpolación lineal) que nunca entran al pipeline.
 - `reporting`: entorno (versiones, commit, remoto sin credenciales), hashes y JSON.
 
-Pendiente: dataset de PyTorch, overlap-add y métricas, U-Net, entrenamiento y Optuna.
+- `model` (PyTorch):
+  - `architecture`, `reference_architecture` y `search_space` construyen las 27 arquitecturas con la regla del protocolo.
+  - `UNet1D`: Conv1d k=3 sobre canal×frecuencia; encoder dilatado con MaxPool1d(2); decoder que interpola, aplica Conv1d y concatena el skip; cabeza Conv1d k=1.
+  - `build_model(config, n_channels, arch)`.
+- `losses`: 0.5 MSE + 0.5 (1 − coseno temporal por dedo), con `eps` aplicado antes de la raíz para que todo sea finito (PyTorch).
+- `metrics.trajectory_metrics`: Pearson por dedo y macro, CCC, MSE y RMSE sobre columnas válidas, solo con numpy. Un dedo constante o con valores no finitos invalida la evaluación con diagnóstico.
+- `validation`:
+  - `overlap_add` promedia ventanas con pesos uniformes y falla si hay cobertura incompleta.
+  - `score_validation(fold, predicciones)` calcula `val_pearson_full` y da los errores en unidades originales.
+- `verification`: paso 3 (`start_run`, `prepare`, `run_pytest`, `checks.v01…v14`, `finish_run`; CLI `python -m tt_ecog.verification`).
+  - Cada check guarda su evidencia y devuelve PASS, FAIL o BLOCKED.
+  - El runner combina ese resultado con las pruebas sintéticas marcadas `@pytest.mark.verification("Vxx")`.
+
+Pendiente: dataset de PyTorch y bucle de entrenamiento, factibilidad, épocas y Optuna.

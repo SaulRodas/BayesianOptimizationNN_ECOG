@@ -11,7 +11,6 @@ import nbformat
 import numpy as np
 import pytest
 from scipy.interpolate import CubicSpline
-import yaml
 
 from tt_ecog import preprocessing as pp
 from tt_ecog.config import ExperimentConfig, load_config
@@ -22,57 +21,13 @@ from tt_ecog.prep import blocks as prep_blocks
 from tt_ecog.prep import folds as prep_folds
 from tt_ecog.prep.gate import eda_run_problems, validate_reference_run
 from tt_ecog.prep.steps import STEPS
-from tt_ecog.reporting import write_json
 from tt_ecog.splits import make_folds
-from tt_ecog.store import (FOLDS_MANIFEST, PROCESSED_MANIFEST, StoreError, block_dir, fold_dir, publish,
+from tt_ecog.store import (FOLDS_MANIFEST, PROCESSED_MANIFEST, StoreError, block_dir, publish,
                            verify_manifest)
-from conftest import ROOT, write_subject
+from conftest import EDA_RUN_ID, ROOT, SUBJECTS, project
 
-RUN_ID = "20260101T000000Z_abcdef"
-SUBJECTS = ("S1", "S2", "S3")
+RUN_ID = EDA_RUN_ID
 NOTEBOOK = ROOT / "notebooks/02_preprocesamiento_ecog.ipynb"
-
-
-def project(base, reference_run=RUN_ID):
-    (base / "p/configs").mkdir(parents=True)
-    data = yaml.safe_load((ROOT / "configs/experiment_config.yaml").read_text(encoding="utf-8"))
-    data["channels"]["reference_run"] = reference_run
-    path = base / "p/configs/experiment_config.yaml"
-    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
-    return path
-
-
-def write_eda_evidence(config, drive, raw_paths, run_id=RUN_ID):
-    """Minimal COMPLETE EDA run folder describing ``raw_paths``."""
-    run = config.path(drive, "eda_dir") / run_id
-    (run / "fig").mkdir(parents=True)
-    for subject in SUBJECTS:
-        for entry in config.channel_exclusions(subject):
-            (run / entry["evidence_figure"]).write_bytes(b"evidence " + entry["evidence_figure"].encode())
-    write_json(run / "run_summary.json", {"status": "COMPLETE", "test_accessed": False, "git_commit": "eda"})
-    write_json(run / "data_manifest.json", {s: {"ecog": {"sha256": sha256_file(p)}} for s, p in raw_paths.items()})
-    write_json(run / "effective_config.json", config.data)
-    write_json(run / "artifact_manifest.json", {"sha256": {
-        p.relative_to(run).as_posix(): sha256_file(p) for p in sorted(run.rglob("*")) if p.is_file()}})
-    return run
-
-
-@pytest.fixture(scope="module")
-def prepared(tmp_path_factory):
-    base = tmp_path_factory.mktemp("prep")
-    config_path = project(base)
-    config = load_config(config_path)
-    drive = base / "d"
-    config.path(drive, "raw_dir").mkdir(parents=True)
-    raw = {s: write_subject(drive, config, s, n=60000) for s in SUBJECTS}
-    originals = {s: sha256_file(p) for s, p in raw.items()}
-    write_eda_evidence(config, drive, raw)
-    output = run_prep(config_path, drive)
-    summary = json.loads((output / "run_summary.json").read_text(encoding="utf-8"))
-    storage = config.storage_root(drive)
-    return {"config": config, "config_path": config_path, "drive": drive, "raw": raw, "originals": originals,
-            "output": output, "summary": summary, "pipeline": storage / summary["pipeline_dir"],
-            "folds": storage / summary["fold_set_dir"]}
 
 
 def records(prepared, subject):
@@ -80,6 +35,7 @@ def records(prepared, subject):
     return ecog, read_development_glove(prepared["config"], prepared["drive"], ecog)
 
 
+@pytest.mark.verification("V11", "V14")
 def test_run_is_complete_and_traceable(prepared):
     summary, output = prepared["summary"], prepared["output"]
     assert summary["status"] == "COMPLETE", summary
@@ -104,6 +60,7 @@ def test_run_is_complete_and_traceable(prepared):
     assert channel_map["S2"]["excluded_original"] == [20, 37]
 
 
+@pytest.mark.verification("V02", "V09", "V11")
 def test_block_arrays_contract(prepared):
     config = prepared["config"]
     for subject, channels in zip(SUBJECTS, (61, 46, 64)):
@@ -125,6 +82,7 @@ def test_block_arrays_contract(prepared):
             assert manifest["morlet"]["policy"] == "reported, never clipped"
 
 
+@pytest.mark.verification("V06")
 def test_alignment_ecog_t_to_flexion_t_plus_delay(prepared):
     """Stored y[n] is the flexion at time y_index[n] = x_index[n] + 20, from B2's own samples (V06)."""
     config = prepared["config"]
@@ -141,6 +99,7 @@ def test_alignment_ecog_t_to_flexion_t_plus_delay(prepared):
     assert np.abs(y[:, valid] - spline(x_index[valid] / 100)).max() > 1e-3 * scale
 
 
+@pytest.mark.verification("V07", "V08")
 def test_blocks_are_processed_independently(prepared, tmp_path):
     """Perturbing raw ECoG and glove inside B3 leaves every other block bitwise identical (V07/V08)."""
     ecog, glove = records(prepared, "S3")
@@ -167,6 +126,7 @@ def _arrays(prepared, subject):
     return blocks, {n: {k: np.array(v) for k, v in a.items()} for n, a in arrays.items()}
 
 
+@pytest.mark.verification("V05")
 def test_validation_perturbation_leaves_fold_scalers_unchanged(prepared, tmp_path):
     """Scalers and training masks of fold val_B3 do not see B3 (V05)."""
     config = prepared["config"]
@@ -182,6 +142,7 @@ def test_validation_perturbation_leaves_fold_scalers_unchanged(prepared, tmp_pat
         np.testing.assert_array_equal(np.load(tmp_path / "a" / file), np.load(tmp_path / "b" / file))
 
 
+@pytest.mark.verification("V05", "V11")
 def test_zero_range_features_or_fingers_fail(prepared, tmp_path):
     config = prepared["config"]
     names = config.data["validation"]["block_names"]
@@ -199,6 +160,7 @@ def test_zero_range_features_or_fingers_fail(prepared, tmp_path):
         prep_folds.build_fold(config, "S1", fold, still, names, [], 256, "test", tmp_path / "b")
 
 
+@pytest.mark.verification("V04", "V05", "V10", "V11")
 def test_load_fold_refuses_candidates_and_returns_scaled_windows(prepared):
     config = prepared["config"]
     with pytest.raises(PermissionError, match="candidate"):
@@ -222,6 +184,7 @@ def test_load_fold_refuses_candidates_and_returns_scaled_windows(prepared):
                                atol=1e-6)
 
 
+@pytest.mark.verification("V11")
 def test_second_run_reuses_verified_directories(prepared):
     leftover = prepared["pipeline"].parent / f"{prepared['pipeline'].name}.partial_crashed"
     leftover.mkdir()
@@ -234,6 +197,7 @@ def test_second_run_reuses_verified_directories(prepared):
         assert json.loads((output / f"tables/{name}.json").read_text(encoding="utf-8"))["reused"] is True
 
 
+@pytest.mark.verification("V11", "V14")
 def test_corrupt_directory_is_never_reused_or_overwritten(prepared, tmp_path):
     copy = tmp_path / prepared["pipeline"].name
     shutil.copytree(prepared["pipeline"], copy, ignore=shutil.ignore_patterns("folds"))
@@ -257,6 +221,7 @@ def _with(config, **channels):
     return ExperimentConfig(data, config.source, config.sha256)
 
 
+@pytest.mark.verification("V02")
 def test_gate_refusals(prepared, tmp_path):
     config, drive = prepared["config"], prepared["drive"]
     digests = dict(prepared["originals"])
@@ -279,6 +244,7 @@ def test_gate_refusals(prepared, tmp_path):
         figure.write_bytes(original)
 
 
+@pytest.mark.verification("V02")
 def test_null_reference_run_blocks_before_processing(tmp_path, prepared):
     config_path = project(tmp_path, reference_run=None)
     drive = tmp_path / "d"
@@ -295,6 +261,7 @@ def test_null_reference_run_blocks_before_processing(tmp_path, prepared):
     assert command.returncode == 2 and "BLOCKED" in command.stdout
 
 
+@pytest.mark.verification("V01")
 def test_step2_sources_never_name_test_variables():
     sources = [ROOT / "src/tt_ecog" / f for f in ("datasets.py", "splits.py", "store.py")]
     sources += sorted((ROOT / "src/tt_ecog/prep").glob("*.py"))
