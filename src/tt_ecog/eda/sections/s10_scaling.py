@@ -5,15 +5,13 @@ import pandas as pd
 from matplotlib.colors import LogNorm
 
 from ... import preprocessing as pp
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 from ._common import empty_panel
 
 GAUSSIAN_IQR_10_90 = 2.5631031310892007  # (q90 - q10) / sigma for a normal distribution
 
 
-@section("s10_scaling", "Escalado", "RobustScaler(10, 90) y MinMax ajustados por fold, sin z-score global")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     # 10a — heavy tails of Morlet power for the illustrative channel.
     shown = (0, 20, 39)
     fig, axes = pl.figure(len(shown), len(subjects), width=4.2, height=2.4)
@@ -41,10 +39,7 @@ def run(ctx, subjects):
     # 10b — std vs robust scale (sklearn RobustScaler semantics) per channel x frequency.
     fig, axes = pl.figure(1, len(subjects), width=4.6, height=3.8)
     for ax, (subject, b) in zip(axes[0], subjects.items()):
-        valid = np.flatnonzero(b.valid100)[::4]
-        matrix = pp.features_to_matrix(b.power100[:, :, valid]).astype(np.float64)
-        scaler = pp.make_feature_scaler(ctx.config).fit(matrix)  # descriptive only: whole record
-        ratio = (matrix.std(axis=0) / np.maximum(scaler.scale_, 1e-300)).reshape(b.cmap.n_kept, b.spec.freqs.size)
+        ratio = b.scale_ratio
         image = ax.imshow(ratio.T, aspect="auto", origin="lower", cmap=pl.SEQUENTIAL,
                           norm=LogNorm(vmin=max(ratio.min(), 0.5), vmax=max(ratio.max(), 2)), interpolation="nearest",
                           extent=[-0.5, b.cmap.n_kept - 0.5, 0, b.spec.freqs.size])
@@ -93,16 +88,7 @@ def run(ctx, subjects):
         y100, _ = b.glove100
         valid = b.valid100
         names = [block.name for block in b.blocks]
-        fractions = np.full((len(b.blocks), 5), np.nan)
-        for k, block in enumerate(b.blocks):
-            held = np.zeros_like(valid)
-            held[block.start_target:block.stop_target] = True
-            train, test = valid & ~held, valid & held
-            if train.sum() < 2 or test.sum() < 2:
-                continue
-            scaler = pp.make_target_scaler(ctx.config).fit(y100[:, train].T)
-            scaled = scaler.transform(y100[:, test].T)
-            fractions[k] = ((scaled < 0) | (scaled > 1)).mean(axis=0)
+        fractions = b.minmax_outside
         if np.isnan(fractions).all():
             empty_panel(ax, "Bloques sin muestras válidas")
             continue
@@ -120,3 +106,38 @@ def run(ctx, subjects):
     axes[0, 0].legend(loc="upper left", fontsize=7)
     ctx.save_table(pd.DataFrame(outside_rows), "s10_minmax_outside", "Fracción de flexión fuera de [0,1] con MinMax ajustado sin el bloque")
     ctx.save_fig(fig, "s10_minmax_heldout", "MinMax ajustado con los otros bloques: la validación puede salir de [0,1] (solo transform, nunca fit)")
+
+
+SECTION_NAME = 's10_scaling'
+TITLE = 'Escalado'
+JUSTIFIES = 'RobustScaler(10, 90) y MinMax ajustados por fold, sin z-score global'
+
+
+def scale_ratio(b, config):
+    valid = np.flatnonzero(b.valid100)[::4]
+    matrix = pp.features_to_matrix(b.power100[:, :, valid]).astype(np.float64)
+    scaler = pp.make_feature_scaler(config).fit(matrix)  # descriptive only: whole record
+    ratio = (matrix.std(axis=0) / np.maximum(scaler.scale_, 1e-300)).reshape(b.cmap.n_kept, b.spec.freqs.size)
+    return ratio
+
+
+def minmax_outside(b, config):
+    y100, _ = b.glove100
+    valid = b.valid100
+    fractions = np.full((len(b.blocks), 5), np.nan)
+    for k, block in enumerate(b.blocks):
+        held = np.zeros_like(valid)
+        held[block.start_target:block.stop_target] = True
+        train, test = valid & ~held, valid & held
+        if train.sum() < 2 or test.sum() < 2:
+            continue
+        scaler = pp.make_target_scaler(config).fit(y100[:, train].T)
+        scaled = scaler.transform(y100[:, test].T)
+        fractions[k] = ((scaled < 0) | (scaled > 1)).mean(axis=0)
+    return fractions
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    b.scale_ratio = scale_ratio(b, config)
+    b.minmax_outside = minmax_outside(b, config)

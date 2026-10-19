@@ -4,14 +4,10 @@ import numpy as np
 import pandas as pd
 
 from ... import preprocessing as pp
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 
 
-@section("s06_morlet", "Transformada Morlet", "40 frecuencias log 40–200 Hz, 7 ciclos, zero_mean y máscaras de borde")
-def run(ctx, subjects):
-    from mne.time_frequency import morlet
-
+def draw(ctx, subjects):
     first = next(iter(subjects.values()))
     spec = first.spec
     freqs, n_cycles, fs = spec.freqs, spec.n_cycles, spec.sfreq
@@ -26,7 +22,7 @@ def run(ctx, subjects):
     fig, axes = pl.figure(1, 4, width=3.6, height=3.2)
     shown = [0, 13, 27, 39]
     for k, index in enumerate(shown):
-        w = morlet(fs, [freqs[index]], n_cycles=n_cycles, zero_mean=True)[0]
+        w = first.wavelets[index]
         t = (np.arange(w.size) - (w.size - 1) / 2) / fs * 1000
         axes[0, 0].plot(t, np.real(w) / np.abs(w).max() + 2.2 * k, color=pl.SLOTS[k], lw=0.8,
                         label=f"{freqs[index]:.0f} Hz")
@@ -70,14 +66,7 @@ def run(ctx, subjects):
 
     # 06c — zero-mean property and edge effect on an independent excerpt.
     fig, axes = pl.figure(1, 2, width=5.6, height=3.4)
-    window = first.excerpt(ctx.eda["excerpt_seconds"])
-    channels = np.linspace(0, first.cmap.n_kept - 1, min(8, first.cmap.n_kept)).astype(int)
-    segment = first.cmr[channels, window]
-    offset = segment + 50 * segment.std()
-    with_zero = pp.morlet_power(offset, fs, freqs, n_cycles, True)
-    without_zero = pp.morlet_power(offset, fs, freqs, n_cycles, False)
-    reference = pp.morlet_power(segment, fs, freqs, n_cycles, True)
-    interior = pp.valid_slice(segment.shape[1], int(half.max()))
+    with_zero, without_zero, reference, interior = first.offset_power
     for label, power, color in (("zero_mean=True", with_zero, pl.KEPT), ("zero_mean=False", without_zero, pl.SLOTS[1])):
         rel = np.abs(power[:, :, interior] - reference[:, :, interior]).max(axis=(0, 2)) / reference[:, :, interior].mean(axis=(0, 2))
         axes[0, 0].plot(freqs, np.maximum(rel, 1e-18), color=color, lw=1.2, label=label)
@@ -85,14 +74,7 @@ def run(ctx, subjects):
                    title="Respuesta a un offset DC de 50 STD")
     axes[0, 0].legend(loc="upper right")
     # Edge effect averaged over many independent 1 s segments of the filtered record.
-    seg = int(round(fs))
-    interior_rec = pp.valid_slice(first.n_samples, first.spec.fir.half_support)
-    starts = np.arange(interior_rec.start, interior_rec.stop - seg, seg)[:60]
-    profile = np.zeros((freqs.size, seg))
-    for start in starts:
-        profile += pp.morlet_power(first.filtered[channels[:4], start:start + seg], fs, freqs, n_cycles, True).mean(axis=0)
-    profile /= max(len(starts), 1)
-    centre = profile[:, int(half.max()):seg - int(half.max())].mean(axis=1, keepdims=True)
+    profile, centre, starts, seg = first.edge_power
     distance_ms = np.arange(seg // 2) / fs * 1000
     for k, index in enumerate((0, 20, 39)):
         axes[0, 1].plot(distance_ms, profile[index, :seg // 2] / centre[index], color=pl.SLOTS[k], lw=1.1,
@@ -103,3 +85,46 @@ def run(ctx, subjects):
                    title=f"Efecto de borde (promedio de {len(starts)} segmentos de 1 s)")
     axes[0, 1].legend(loc="lower right")
     ctx.save_fig(fig, "s06_zero_mean_edges", "Con 7 ciclos y f >= 40 Hz, zero_mean apenas cambia la respuesta a DC (la fuga residual viene del truncado a ±5σ y el pasabanda ya elimina el DC); los bordes se atenúan hasta el semisoporte y se enmascaran")
+
+
+SECTION_NAME = 's06_morlet'
+TITLE = 'Transformada Morlet'
+JUSTIFIES = '40 frecuencias log 40–200 Hz, 7 ciclos, zero_mean y máscaras de borde'
+
+
+def offset_power(b, eda):
+    fs, freqs, n_cycles = b.fs, b.spec.freqs, b.spec.n_cycles
+    half = pp.morlet_half_support(freqs, n_cycles, fs)
+    window = b.excerpt(eda["excerpt_seconds"])
+    channels = np.linspace(0, b.cmap.n_kept - 1, min(8, b.cmap.n_kept)).astype(int)
+    segment = b.cmr[channels, window]
+    offset = segment + 50 * segment.std()
+    with_zero = pp.morlet_power(offset, fs, freqs, n_cycles, True)
+    without_zero = pp.morlet_power(offset, fs, freqs, n_cycles, False)
+    reference = pp.morlet_power(segment, fs, freqs, n_cycles, True)
+    interior = pp.valid_slice(segment.shape[1], int(half.max()))
+    return with_zero, without_zero, reference, interior
+
+
+def edge_power(b):
+    fs, freqs, n_cycles = b.fs, b.spec.freqs, b.spec.n_cycles
+    half = pp.morlet_half_support(freqs, n_cycles, fs)
+    channels = np.linspace(0, b.cmap.n_kept - 1, min(8, b.cmap.n_kept)).astype(int)
+    seg = int(round(fs))
+    interior_rec = pp.valid_slice(b.n_samples, b.spec.fir.half_support)
+    starts = np.arange(interior_rec.start, interior_rec.stop - seg, seg)[:60]
+    profile = np.zeros((freqs.size, seg))
+    for start in starts:
+        profile += pp.morlet_power(b.filtered[channels[:4], start:start + seg], fs, freqs, n_cycles, True).mean(axis=0)
+    profile /= max(len(starts), 1)
+    centre = profile[:, int(half.max()):seg - int(half.max())].mean(axis=1, keepdims=True)
+    return profile, centre, starts, seg
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    from mne.time_frequency import morlet
+    if b.subject == config.data['project']['subjects'][0]:
+        b.wavelets = morlet(b.fs, b.spec.freqs, n_cycles=b.spec.n_cycles, zero_mean=True)
+        b.offset_power = offset_power(b, config.data['eda'])
+        b.edge_power = edge_power(b)

@@ -59,7 +59,7 @@ def _interval(value: Any, name: str, *, ordered: bool = True) -> None:
 
 
 RESOLVABLE_PATHS = {"raw_dir", "processed_dir", "manifests_dir", "results_dir", "eda_dir", "preprocessing_dir",
-                    "verification_dir"}
+                    "verification_dir", "training_dir", "optimization_dir", "evaluation_dir"}
 VERIFICATION_IDS = [f"V{k:02d}" for k in range(1, 15)]
 
 
@@ -106,9 +106,6 @@ def _validate_channels(channels: dict, nominal: dict[str, int], subjects: list[s
     for key, value in expected.items():
         if channels[key] != value:
             raise ConfigError(f"channels.{key}: expected {value!r}")
-    reference = channels["reference_run"]
-    if reference is not None and (not isinstance(reference, str) or not RUN_ID.match(reference)):
-        raise ConfigError("channels.reference_run: expected null or an EDA run_id such as 20261019T004831Z_3a68db")
     excluded = channels["excluded"]
     if not isinstance(excluded, dict) or list(excluded) != subjects:
         raise ConfigError("channels.excluded: expected exactly the keys S1, S2, S3 in order")
@@ -184,8 +181,7 @@ def _validate_eda(eda: dict) -> None:
         raise ConfigError("eda.development_labels_use must be descriptive_only")
     for key in ("window_seconds", "psd_window_seconds", "line_zoom_psd_window_seconds",
                 "line_half_width_hz", "numerical_epsilon", "episode_context_seconds",
-                "excerpt_seconds", "correlation_excerpt_seconds", "autocorr_max_lag_seconds",
-                "support_tolerance"):
+                "excerpt_seconds", "correlation_excerpt_seconds", "autocorr_max_lag_seconds"):
         positive(eda[key], f"eda.{key}")
     positive(eda["psd_overlap_fraction"], "eda.psd_overlap_fraction", zero=True)
     if eda["psd_overlap_fraction"] >= 1:
@@ -274,6 +270,15 @@ def _validate_model(model: dict, signal: dict) -> None:
 
 
 def _validate_training_and_metrics(training: dict, metrics: dict) -> None:
+    if (training["optimizer"] != "adamw" or training["scheduler"] != "none"
+            or training["adamw_weight_decay_policy"] != "all_trainable_parameters"):
+        raise ConfigError("training: AdamW on all trainable parameters, without a scheduler, is fixed")
+    for key in ("batch_size_initial_candidate", "search_epochs_candidate", "profile_warmup_steps",
+                "profile_measured_steps"):
+        _positive_int(training[key], f"training.{key}")
+    for key in ("batch_size", "search_epochs", "final_max_epochs"):
+        if training[key] is not None:
+            _positive_int(training[key], f"training.{key}")
     loss = training["loss"]
     if (loss["name"] != "mse_plus_temporal_cosine" or loss["mse_weight"] != 0.5 or loss["cosine_weight"] != 0.5
             or loss["cosine_axis"] != "temporal_per_finger"):
@@ -294,6 +299,7 @@ def _validate_verification(verification: dict) -> None:
         raise ConfigError("verification.required_test_ids must list V01-V14")
     if verification["all_pass_required"] is not True or verification["automatically_freeze_on_all_pass"] is not False:
         raise ConfigError("verification: every check must pass and freezing requires explicit approval")
+    positive(verification["support_tolerance"], "verification.support_tolerance")
     positive(verification["isolation_tolerance"], "verification.isolation_tolerance", zero=True)
     positive(verification["reproducibility_rtol"], "verification.reproducibility_rtol")
     _positive_int(verification["architecture_batch_size"], "verification.architecture_batch_size")
@@ -317,6 +323,9 @@ def load_config(path: str | Path) -> ExperimentConfig:
         paths = data["paths"]
         for name in ("persistent_storage_dir", *sorted(RESOLVABLE_PATHS)):
             relative_path(paths[name], name)
+        selected = paths.get("processed_pipeline_id")
+        if selected is not None and (not isinstance(selected, str) or not re.fullmatch(r"[0-9a-f]{64}", selected)):
+            raise ConfigError("paths.processed_pipeline_id: expected null or a full SHA-256")
         raw = data["raw_data"]
         for name, value in {"ecog_fs_hz": 1000, "glove_fs_effective_hz": 25,
                             "n_fingers": 5, "train_ecog_key": "train_data",

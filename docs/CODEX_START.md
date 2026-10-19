@@ -1,31 +1,36 @@
-# Encargo para agentes: implementar TT ECoG por etapas
+# Inicio de trabajo — TT ECoG
 
-Implementa el proyecto descrito por los documentos de este repositorio. Antes de generar código, lee `AGENTS.md`, `docs/protocolo_implementacion.md` (v1.1), `docs/dataset_spec.md`, `docs/validation_requirements.md` y `configs/experiment_config.yaml`.
+Leer `AGENTS.md`, el protocolo v1.2, los requisitos de verificación, el contrato del dataset y el YAML. El README principal describe comandos y responsabilidades.
 
-**No reutilices implementaciones previas ni infieras parámetros que están `null`.** Debes preservar el número de épocas sin decidir y no comenzar Optuna hasta que exista una aprobación verificable del paso 3.
+## Estado de implementación
 
-## Primer encargo: EDA de justificación — HECHO (v0.3.0)
+EDA opcional, preprocesamiento, arquitectura mínima y verificación implementados. Reorganización v0.6.0: celdas explícitas, persistencia esquema 2 e identidad compartida. Las corridas reales históricas están documentadas en la bitácora; no certifican el formato nuevo ni sustituyen V01–V14 real.
 
-- Paquete instalable `src/tt_ecog/` y notebook `01_exploracion_ecog.ipynb` para tres sujetos, ejecutado desde VS Code con kernel Colab.
-- `tt_ecog.preprocessing`: primitivas únicas y por segmento (exclusión de canales, CMR, FIR pasabanda+notch, Morlet, antialias + decimación, guante 25 Hz e interpolación cúbica, retardo, fábricas de escaladores).
-- `tt_ecog.eda`: once secciones que justifican cada decisión de preprocesamiento; figuras, tablas y manifiestos en `MyDrive/TT_ECoG/results/eda/<run_id>/`.
-- La etapa de QC con umbrales y `qc_decisions.json` fue **eliminada** (decisión de la persona usuaria, 2026-10-18). La exclusión de canales es una lista fija en el YAML (`channels.excluded`: S1-54, S2-20, S2-37) con evidencia ECoG. La regla "no codificar decisiones por canal/sujeto en el código" se cumple manteniéndolas solo en el YAML.
-- Pendiente de la persona usuaria: ejecutar el notebook con los datos reales y revisar las figuras.
+## Flujo pendiente con datos reales
 
-## Segundo encargo: preprocesamiento — IMPLEMENTADO (v0.4.0), pendiente la corrida real
+1. Ejecutar 02 en Colab desde datos crudos; no necesita 01.
+2. Copiar `pipeline_id` a `paths.processed_pipeline_id`, hacer commit/push y ejecutar 03.
+3. Mantener V04/V09 BLOCKED mientras la purga siga pendiente. Aprobar después con su evidencia; si el valor coincide con el candidato, repetir 03 sobre los mismos datos. Si cambia, generar y seleccionar otro pipeline con 02.
+4. Congelar solo después de V01–V14 PASS real y aprobación documentada.
+5. Ejecutar `04_entrenamiento.ipynb`: recursos y entrenamiento en el mismo notebook, con
+   `training.search_epochs_candidate: 50` como propuesta de piloto. Elegir el batch común
+   con la memoria medida. Revisar las curvas antes de fijar las épocas de búsqueda.
 
-Hecho por bloque: B1–B5 se procesan de forma independiente, la purga se aplica a nivel de columnas y los folds usan el candidato etiquetado mientras la purga sea `null`. Ver la entrada v0.4.0 de `docs/experimental_log.md`. Encargo original:
+6. Registrar `training.batch_size` y `training.search_epochs` tras la decisión basada en 04.
+7. Ejecutar 05 para learning rate/weight decay; después 06 para arquitectura. Los estudios son
+   independientes por sujeto, con recuperación de trials y checkpoints. Usar un único runtime
+   escritor por estudio; los fallos detienen la búsqueda sin añadir propuestas.
 
-Implementar `02_preprocesamiento_ecog.ipynb` y completar `splits.py` y `datasets.py`, **reutilizando** las primitivas de `tt_ecog.preprocessing` (no reimplementarlas). Aplicar la exclusión de canales desde datos crudos antes de la CMR, procesar por segmentos independientes de cada fold con guardas, alinear ECoG(t) con flexión(t+0.2 s), interpolar el guante por segmento, generar etiquetas válidas y escaladores por fold sin fugas, y persistir arrays, máscaras, escaladores y manifiestos (`channel_map.json`, `filter_support.json`, `split_manifest.json`).
+8. Decidir máximo final, paciencia y min_delta usando desarrollo. Ejecutar 07: seleccionar
+   duración con B5 (autorizado), reentrenar A/B/C con desarrollo completo, congelar y evaluar test.
+   Registrar `paths.final_run_id` para recuperar la misma corrida, y resolver `test_labels_dir`
+   únicamente en la celda final de acceso a test.
 
-## Tercer encargo: verificación — IMPLEMENTADO (v0.5.0), pendiente la corrida real y la aprobación de la purga
+Los notebooks 02–07 están implementados. Su ejecución experimental sigue pendiente.
+La propuesta de 50 épocas no sustituye los valores aprobados.
+La aprobación se selecciona con los campos existentes `verification.status: approved` y
+`verification.approved_manifest_file`, relativo a `TT_ECoG`. El 04 comprueba el reporte PASS,
+su correspondencia con el pipeline y los componentes congelados. El candidato emitido por 03
+no activa entrenamiento mientras el YAML siga en `pending`.
 
-Hecho: U-Net mínima con los detalles elegidos por la persona usuaria, pérdida, métricas, overlap-add, `tt_ecog.verification` y notebook 03. Ver la entrada v0.5.0 de `docs/experimental_log.md`. Encargo original:
-
-Primero implementar el modelo U-Net parametrizable mínimo y funciones de loss/métricas necesarios para V13-V14, **sin entrenar ni ejecutar Optuna**. Después implementar `03_verificacion_pipeline.ipynb` y pruebas V01-V14. Si una prueba falla, corregir el componente y volver a comprobarlo. Reportar `verification_report.json`, `verification_summary.md` y manifiesto con hashes. Marcar como BLOQUEADO cualquier prueba dependiente de datos ausentes: nunca declarar PASS por omision.
-
-## Siguientes encargos (no ejecutar sin aprobación)
-
-Completar entrenamiento del modelo, perfilar Colab Pro; seleccionar después el número fijo de épocas; configurar Optuna TPE persistente para la etapa 1 y la etapa 2; entrenar variantes A/B/C y evaluar finalmente test con criterios congelados.
-
-**Formato de cada entrega:** cambios de archivos, comandos ejecutados, pruebas y resultados, limitaciones, pendientes y solicitud de aprobación para la etapa siguiente.
+No fijar épocas, batch ni otros `null` sin evidencia. No ejecutar entrenamientos, Optuna ni evaluación final automáticamente. El EDA puede ejecutarse aparte para revisar visualizaciones, sin habilitar ni bloquear este flujo.

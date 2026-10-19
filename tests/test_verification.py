@@ -11,7 +11,7 @@ from tt_ecog.config import VERIFICATION_IDS, load_config
 from tt_ecog.prep import run_prep
 from tt_ecog import verification as ver
 from tt_ecog.verification.runner import CheckResult, combine
-from conftest import ROOT, project
+from conftest import ROOT, project, execute_notebook
 
 NOTEBOOK = ROOT / "notebooks/03_verificacion_pipeline.ipynb"
 PURGE_DEPENDENT = {"V04", "V09"}
@@ -24,11 +24,12 @@ def clean_git(ctx):
 
 @pytest.fixture(scope="module")
 def candidate_run(prepared):
-    ctx = ver.start_run(prepared["config_path"], prepared["drive"])
-    clean_git(ctx)
-    ver.prepare(ctx)
-    results = {run.vid: run(ctx) for run in ver.checks.CHECKS}
-    return ctx, results
+    def before(namespace, source):
+        if "prepare(ctx)" in source:
+            clean_git(namespace["ctx"])
+    namespace = execute_notebook(NOTEBOOK, prepared["config_path"], prepared["drive"], before)
+    ctx = namespace["ctx"]
+    return ctx, ctx.results
 
 
 def test_every_check_runs_on_real_artifacts_and_the_purge_blocks(candidate_run):
@@ -59,7 +60,7 @@ def test_report_never_approves_with_a_pending_purge(candidate_run):
 
 
 def test_approved_purge_unblocks_v04_and_v09(prepared, tmp_path):
-    config_path = project(tmp_path, purge_samples_at_100hz=256)
+    config_path = project(tmp_path, processed_pipeline_id=prepared["summary"]["pipeline_id"], purge_samples_at_100hz=256)
     drive = prepared["drive"]
     assert load_config(config_path).purge_for_build() == (256, "approved")
     output = run_prep(config_path, drive)
@@ -82,6 +83,7 @@ def result(status):
     ("PASS", {"passed": 2, "failed": 1, "skipped": 0, "not_run": 0}, "FAIL"),
     ("PASS", {"passed": 2, "failed": 0, "skipped": 1, "not_run": 0}, "BLOCKED"),
     ("PASS", None, "BLOCKED"),
+    ("PASS", {"passed": 0, "failed": 0, "skipped": 0, "not_run": 0}, "BLOCKED"),
     ("BLOCKED", {"passed": 2, "failed": 0, "skipped": 0, "not_run": 0}, "BLOCKED"),
     ("FAIL", {"passed": 2, "failed": 0, "skipped": 0, "not_run": 0}, "FAIL"),
     (None, {"passed": 2, "failed": 0, "skipped": 0, "not_run": 0}, "BLOCKED")])

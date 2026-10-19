@@ -14,11 +14,10 @@ import numpy as np
 from .. import preprocessing as pp
 from ..config import ExperimentConfig
 from ..io import DataContractError, DevelopmentRecord
-from ..reporting import json_safe, utc_now, write_json
+from ..reporting import json_safe, write_json
 from ..splits import Block, chronological_blocks
-from ..store import PROCESSED_MANIFEST, canonical_hash, HASH_LENGTH, library_versions, source_hashes, write_manifest
+from ..io import save_arrays, processing_contract
 
-PROCESSING_SOURCES = ("preprocessing.py", "splits.py", "store.py", "prep/blocks.py")
 TIME_CONVENTION = {
     "x_index": "global 100 Hz index of the ECoG feature column",
     "y_index": "global 100 Hz index of the paired flexion target, x_index + delay",
@@ -27,24 +26,6 @@ TIME_CONVENTION = {
     "target_time_s": "y_index / 100, seconds of the original record",
     "valid": "full FIR->Morlet->antialias context inside the block AND interpolated flexion at y_index",
 }
-
-
-def pipeline_identity(config: ExperimentConfig, raw_sha256: dict[str, str], reference_run: str) -> dict[str, Any]:
-    data = config.data
-    raw = data["raw_data"]
-    return {"schema_version": 1, "stage": "step2_per_block_features",
-            "raw_data": {k: raw[k] for k in ("ecog_fs_hz", "glove_fs_effective_hz", "expected_channels_nominal",
-                                             "n_fingers", "train_ecog_key", "train_glove_key")},
-            "excluded_channels": {s: list(config.excluded_channels(s)) for s in data["project"]["subjects"]},
-            "signal": data["signal"],
-            "blocks": {"n_base_blocks": data["validation"]["n_base_blocks"],
-                       "block_names": data["validation"]["block_names"]},
-            "eda_reference_run": reference_run, "raw_sha256": raw_sha256,
-            "sources": source_hashes(PROCESSING_SOURCES), "libraries": library_versions(("numpy", "scipy", "mne"))}
-
-
-def pipeline_hash(identity: dict[str, Any]) -> str:
-    return canonical_hash(identity)[:HASH_LENGTH]
 
 
 def _summary(values: np.ndarray) -> dict[str, float]:
@@ -56,11 +37,16 @@ def process_block(spec: pp.PreprocessingSpec, raw: np.ndarray, y25: np.ndarray, 
                   block: Block, out: Path) -> dict[str, Any]:
     x, xvalid, report = pp.segment_features(raw[:, block.start_source:block.stop_source], spec)
     y, yvalid = pp.segment_glove(y25, knots, block.start_source, block.stop_source, spec)
-    n_target = block.stop_target - block.start_target
-    if x.shape[-1] != n_target or y.shape[-1] != n_target:
-        raise DataContractError(f"{spec.subject} {block.name}: features {x.shape[-1]} / targets {y.shape[-1]} "
-                                f"columns, expected {n_target}")
     xa, ya, xi, yi = pp.align_delay(x, y, spec.delay_samples)
+    return save_block(spec, block, knots, x, xvalid, yvalid, xa, ya, xi, yi, report, out)
+
+
+def save_block(spec, block, knots, x, xvalid, yvalid, xa, ya, xi, yi, report, out):
+    """Validate and save explicitly transformed/aligned arrays; performs no transformation."""
+    n_target = block.stop_target - block.start_target
+    if xvalid.size != n_target or yvalid.size != n_target:
+        raise DataContractError(f"{spec.subject} {block.name}: features {xvalid.size} / targets {yvalid.size} "
+                                f"columns, expected {n_target}")
     xv, yv = xvalid[xi], yvalid[yi]
     valid = xv & yv
     if not valid.any():
@@ -69,15 +55,13 @@ def process_block(spec: pp.PreprocessingSpec, raw: np.ndarray, y25: np.ndarray, 
         raise DataContractError(f"{spec.subject} {block.name}: nonfinite flexion on valid columns")
     x_index = (block.start_target + xi).astype(np.int64)
     y_index = (block.start_target + yi).astype(np.int64)
-    out.mkdir(parents=True)
-    np.save(out / "x.npy", np.ascontiguousarray(xa))
-    np.save(out / "y.npy", np.ascontiguousarray(ya, dtype=np.float64))
-    np.save(out / "x_index.npy", x_index)
-    np.save(out / "y_index.npy", y_index)
-    np.save(out / "valid.npy", valid)
+    save_arrays(out, x=np.ascontiguousarray(xa), y=np.ascontiguousarray(ya, dtype=np.float64),
+                x_index=x_index, y_index=y_index, valid=valid)
+    report = {**report, "negative_values_valid": int(np.count_nonzero(x[:, :, xvalid] < 0)),
+              "values_valid": int(x[:, :, xvalid].size)}
     runs = np.flatnonzero(np.diff(np.r_[False, valid, False].astype(np.int8))).reshape(-1, 2)
     manifest = {
-        "schema_version": 1, "subject": spec.subject, "block": block.name,
+        "schema_version": 2, "subject": spec.subject, "block": block.name,
         "range": {"start_source": block.start_source, "stop_source": block.stop_source,
                   "start_target": block.start_target, "stop_target": block.stop_target,
                   "start_time_s": block.start_source / spec.sfreq, "stop_time_s": block.stop_source / spec.sfreq},
@@ -123,14 +107,12 @@ def process_subject(config: ExperimentConfig, ecog: DevelopmentRecord, glove: De
                                                        "tolerance", "factor", "change_fraction_at_phase")}}
 
 
-def build_pipeline(config: ExperimentConfig, records: dict[str, tuple[DevelopmentRecord, DevelopmentRecord]],
-                   identity: dict[str, Any], digest: str, root: Path, run_id: str, git_commit: str | None) -> None:
-    """Process every subject into ``root`` and write the manifests (processed_manifest last)."""
-    results = {subject: process_subject(config, ecog, glove, root) for subject, (ecog, glove) in records.items()}
+def write_processing_metadata(config: ExperimentConfig, records: dict, results: dict, root: Path) -> None:
+    """Persist the metadata of already processed subjects."""
     specs = {subject: result["spec"] for subject, result in results.items()}
     any_spec = next(iter(specs.values()))
     analytic = pp.support_report(any_spec)
-    measured = pp.measured_support(any_spec, config.data["eda"]["support_tolerance"])
+    measured = pp.measured_support(any_spec, config.data["verification"]["support_tolerance"])
     manifests = root / "manifests"
     manifests.mkdir()
     write_json(manifests / "channel_map.json", {s: spec.channels.to_json() for s, spec in specs.items()})
@@ -144,7 +126,7 @@ def build_pipeline(config: ExperimentConfig, records: dict[str, tuple[Developmen
                              "method": "unit impulse through FIR -> Morlet -> antialias, max over frequencies"},
         "edge_mask": {"half_support_source": pp.chain_half_support(any_spec),
                       "rule": "column k valid iff k*factor - H >= 0 and k*factor + H <= n_source_block - 1"},
-        "purge": {"value": config.data["validation"]["purge_samples_at_100hz"],
+        "purge": {"value": config.purge_for_build()[0],
                   "note": "Pending V04/V09. Blocks are processed independently, so no feature of a block "
                           "depends on another block; the purge only removes training columns near validation."}}))
     write_json(manifests / "glove_storage.json", json_safe({
@@ -161,13 +143,9 @@ def build_pipeline(config: ExperimentConfig, records: dict[str, tuple[Developmen
                         "start_time_s": b.start_source / specs[s].sfreq, "stop_time_s": b.stop_source / specs[s].sfreq}
                        for b in r["blocks"]] for s, r in results.items()}}))
     write_json(manifests / "preprocessing_config.json", json_safe({
-        "identity": identity,
+        "identity": processing_contract(config, {s: pair[0].metadata["sha256"] for s, pair in records.items()}),
         "order": ["exclude channels.excluded", "common median reference (instantaneous)",
                   "FIR bandpass+notch (zero phase, reflect padding, masked edges)", "Morlet power at 1 kHz",
                   "Kaiser antialias + decimation to 100 Hz", "glove: effective 25 Hz samples -> cubic spline per block",
                   "pair ECoG(t) with flexion(t + delay)"],
         "x_dtype": "float32", "y_dtype": "float64", "scaling": "per fold (folds/), never here"}))
-    write_manifest(root, PROCESSED_MANIFEST, json_safe({
-        "schema_version": 1, "pipeline_hash": digest, "identity": identity,
-        "created_by_run": run_id, "created_at_utc": utc_now(), "git_commit": git_commit,
-        "test_accessed": False}))

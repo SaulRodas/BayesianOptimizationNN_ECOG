@@ -5,14 +5,13 @@ import pandas as pd
 
 from ... import preprocessing as pp
 from ...descriptive import welch_psd
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 from ._common import empty_panel
 
 
-def _movement_rest_ratio(b, ctx) -> tuple[np.ndarray, np.ndarray, int, int]:
+def movement_rest_ratio(b, eda) -> tuple[np.ndarray, np.ndarray, int, int]:
     """log10 PSD(movement windows) - log10 PSD(rest windows) per channel."""
-    window = int(round(ctx.eda["window_seconds"] * b.fs))
+    window = int(round(eda["window_seconds"] * b.fs))
     per_target = b.spec.factor
     moving = b.movement.moving_target
     log_move, log_rest = None, None
@@ -23,7 +22,7 @@ def _movement_rest_ratio(b, ctx) -> tuple[np.ndarray, np.ndarray, int, int]:
         fraction = moving[start // per_target:(start + window) // per_target].mean()
         if 0.05 <= fraction <= 0.5:
             continue
-        freq, psd = welch_psd(b.cmr[:, start:start + window], b.fs, ctx.eda["window_seconds"] / 2, 0.5)
+        freq, psd = welch_psd(b.cmr[:, start:start + window], b.fs, eda["window_seconds"] / 2, 0.5)
         logp = np.log10(np.maximum(psd, 1e-300))
         if fraction > 0.5:
             log_move = logp if log_move is None else log_move + logp
@@ -36,10 +35,10 @@ def _movement_rest_ratio(b, ctx) -> tuple[np.ndarray, np.ndarray, int, int]:
     return freq, log_move / n_move - log_rest / n_rest, n_move, n_rest
 
 
-def _ersp(b, ctx) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
+def event_related_power(b, eda) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     """Median-over-channels and illustrative-channel ERSP (dB) around onsets."""
-    diag = ctx.eda["diagnostic_morlet"]
-    movement = ctx.eda["movement"]
+    diag = eda["diagnostic_morlet"]
+    movement = eda["movement"]
     freqs = pp.morlet_frequencies(diag["freq_range_hz"], diag["n_frequencies"])
     fs_t = b.spec.target_sfreq
     lo = int(round(movement["ersp_window_seconds"][0] * fs_t))
@@ -66,8 +65,7 @@ def _ersp(b, ctx) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int]:
     return freqs, lags, np.nanmedian(ersp, axis=0), ersp[b.descriptive_channel], len(centers)
 
 
-@section("s04_band", "Banda 40–200 Hz", "Banda analítica 40–200 Hz y diseño del pasabanda")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     band = ctx.config.data["signal"]["bandpass_hz"]
     lines = ctx.config.data["signal"]["notch_hz"]
 
@@ -89,7 +87,7 @@ def run(ctx, subjects):
     # 04b — movement vs rest spectral change (development labels, descriptive).
     fig, axes = pl.figure(1, len(subjects), width=4.6, height=3.4, sharey=True)
     for ax, (subject, b) in zip(axes[0], subjects.items()):
-        freq, ratio, n_move, n_rest = _movement_rest_ratio(b, ctx)
+        freq, ratio, n_move, n_rest = b.movement_rest_spectrum
         if ratio is None:
             empty_panel(ax, f"Ventanas insuficientes (mov {n_move}, reposo {n_rest})")
             continue
@@ -109,7 +107,7 @@ def run(ctx, subjects):
     fig, axes = pl.figure(2, len(subjects), width=4.6, height=3.2)
     rows = []
     for col, (subject, b) in enumerate(subjects.items()):
-        freqs, lags, median, illustrative, n_epochs = _ersp(b, ctx)
+        freqs, lags, median, illustrative, n_epochs = b.event_related_power
         if median is None:
             empty_panel(axes[0, col], "Sin inicios de movimiento utilizables")
             empty_panel(axes[1, col], "Sin inicios de movimiento utilizables")
@@ -154,3 +152,14 @@ def run(ctx, subjects):
     ctx.save_json({"bandpass": spec.bandpass.to_json(), "notch": spec.notch.to_json(),
                    "combined": spec.fir.to_json(), "antialias": spec.antialias.to_json()},
                   "filter_designs", "Diseños FIR efectivos (tipo, taps, soporte, fase, hash)")
+
+
+SECTION_NAME = 's04_band'
+TITLE = 'Banda 40–200 Hz'
+JUSTIFIES = 'Banda analítica 40–200 Hz y diseño del pasabanda'
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    b.movement_rest_spectrum = movement_rest_ratio(b, config.data['eda'])
+    b.event_related_power = event_related_power(b, config.data['eda'])

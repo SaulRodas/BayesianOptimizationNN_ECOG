@@ -10,10 +10,9 @@ import pytest
 
 from tt_ecog.config import load_config
 from tt_ecog.eda import runner
-from tt_ecog.eda.context import section
 from tt_ecog.eda.sections import SECTIONS
 from tt_ecog.io import sha256_file
-from conftest import ROOT, write_subject
+from conftest import ROOT, write_subject, execute_notebook
 
 NOTEBOOK = ROOT / "notebooks/01_exploracion_ecog.ipynb"
 
@@ -35,7 +34,7 @@ def full_run(tmp_path_factory):
     config.path(drive, "raw_dir").mkdir(parents=True)
     paths = [write_subject(drive, config, s, n=30000, artifacts=True) for s in ("S1", "S2", "S3")]
     originals = [sha256_file(p) for p in paths]
-    output = runner.run_eda(config_path, drive)
+    output = execute_notebook(NOTEBOOK, config_path, drive)["ctx"].output
     return config, output, paths, originals
 
 
@@ -44,7 +43,7 @@ def test_full_run_is_complete_and_traceable(full_run):
     summary = json.loads((output / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "COMPLETE", summary
     assert summary["test_accessed"] is False and summary["processed_data_persisted"] is False
-    assert [name for name in summary["sections"]] == [s.section_name for s in SECTIONS]
+    assert [name for name in summary["sections"]] == [s.SECTION_NAME for s in SECTIONS]
     for name, record in summary["sections"].items():
         assert record["status"] == "COMPLETE", name
         assert record["artifacts"], name
@@ -137,11 +136,11 @@ def test_file_not_found_inside_a_section_is_fail_not_blocked(tmp_path, monkeypat
     for subject in ("S1", "S2", "S3"):
         write_subject(tmp_path, config, subject, n=4000)
 
-    @section("s_fake", "Falla simulada", "regresión")
     def failing(ctx, subjects):
         raise FileNotFoundError("cannot write figure")
 
-    monkeypatch.setattr(runner, "SECTIONS", [failing])
+    from types import SimpleNamespace
+    monkeypatch.setattr(runner, "SECTIONS", [SimpleNamespace(SECTION_NAME="s_fake", TITLE="Failure", JUSTIFIES="test", draw=failing)])
     output = runner.run_eda(config_path, tmp_path)
     summary = json.loads((output / "run_summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "FAIL"
@@ -150,7 +149,7 @@ def test_file_not_found_inside_a_section_is_fail_not_blocked(tmp_path, monkeypat
 
 
 def test_overlong_artifact_path_fails_explicitly(tmp_path, monkeypatch):
-    from tt_ecog.eda import context
+    from tt_ecog import reporting as context
     config_path = project_copy(tmp_path)
     load_config(config_path).storage_root(tmp_path).mkdir()
     ctx = runner.start_run(config_path, tmp_path)
@@ -169,7 +168,7 @@ def test_notebook_is_light_and_valid():
     assert "--ff-only" in code[0] and "pull" in code[0]
     joined = "\n".join(code)
     for function in SECTIONS:
-        assert function.section_name in joined
+        assert function.SECTION_NAME in joined
     assert "finish_run" in joined
 
 

@@ -3,12 +3,10 @@
 import numpy as np
 import pandas as pd
 
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 
 
-@section("s01_overview", "Datos de desarrollo", "Contexto: integridad, dimensiones y hashes de S1/S2/S3")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     rows = []
     for subject, b in subjects.items():
         ecog, glove = b.ecog_record.metadata, b.glove_record.metadata
@@ -60,3 +58,8 @@ def run(ctx, subjects):
                 label.set_color(pl.EXCLUDED)
         ax.set(title=pl.subject_title(subject, f"{seconds:g} s centrales"), xlabel="Tiempo original (s)")
     ctx.save_fig(fig, "s01_raw_traces", "Trazas crudas (8 canales conservados y los excluidos en rojo); amplitud recortada a ±3 separaciones")
+
+
+SECTION_NAME = 's01_overview'
+TITLE = 'Datos de desarrollo'
+JUSTIFIES = 'Contexto: integridad, dimensiones y hashes de S1/S2/S3'

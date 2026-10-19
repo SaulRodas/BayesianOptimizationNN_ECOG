@@ -7,14 +7,13 @@ from scipy.signal import coherence
 from ... import preprocessing as pp
 from ...descriptive import welch_psd
 from .. import comparators
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 from ._common import empty_panel
 
 TARGET_FREQS = (40, 80, 140, 200)
 
 
-def _envelopes(b, seconds: float):
+def power_envelopes(b, seconds: float):
     window = b.excerpt(seconds)
     channels = np.linspace(0, b.cmap.n_kept - 1, min(5, b.cmap.n_kept)).astype(int)
     index = [int(np.argmin(np.abs(b.spec.freqs - f))) for f in TARGET_FREQS]
@@ -23,18 +22,15 @@ def _envelopes(b, seconds: float):
     return power[:, :, edge:power.shape[-1] - edge], index
 
 
-@section("s07_decimation", "Decimación a 100 Hz", "Potencia Morlet a 100 Hz con antialias FIR (no submuestreo directo)")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     seconds = ctx.eda["correlation_excerpt_seconds"]
     nyquist = next(iter(subjects.values())).spec.target_sfreq / 2
     rows = []
 
     # 07a — spectrum of the power envelope at 1 kHz.
     fig, axes = pl.figure(1, len(subjects), width=4.6, height=3.4, sharey=True)
-    envelopes = {}
     for ax, (subject, b) in zip(axes[0], subjects.items()):
-        power, index = _envelopes(b, seconds)
-        envelopes[subject] = (power, index)
+        power, index = b.power_envelopes
         for k, f_index in enumerate(index):
             freq, psd = welch_psd(power[:, k], b.fs, ctx.eda["psd_window_seconds"], ctx.eda["psd_overlap_fraction"])
             psd = np.median(psd, axis=0)
@@ -55,12 +51,12 @@ def run(ctx, subjects):
     # 07b — naive slicing vs antialiased decimation.
     fig, axes = pl.figure(1, len(subjects), width=4.6, height=3.4, sharey=True)
     for ax, (subject, b) in zip(axes[0], subjects.items()):
-        power, index = envelopes[subject]
+        power, index = b.power_envelopes
         envelope = power[:, -1]
         factor = b.spec.factor
         f_src, p_src = welch_psd(envelope, b.fs, ctx.eda["psd_window_seconds"], 0.5)
-        for label, data, color in (("Submuestreo directo [::10]", comparators.naive_slice(envelope, factor), pl.COMPARATOR),
-                                   ("Antialias + decimación", pp.decimate(envelope, b.spec.antialias, factor), pl.KEPT)):
+        for label, data, color in (("Submuestreo directo [::10]", b.direct_envelope, pl.COMPARATOR),
+                                   ("Antialias + decimación", b.antialiased_envelope, pl.KEPT)):
             f, p = welch_psd(data, b.spec.target_sfreq, ctx.eda["psd_window_seconds"], 0.5)
             ax.plot(f[1:], np.median(p, axis=0)[1:], color=color, lw=1.1, label=label)
         keep = (f_src > 0) & (f_src <= nyquist)
@@ -82,7 +78,7 @@ def run(ctx, subjects):
         x, y = b.hg100[:, valid], y100[:, valid]
         nper = min(512, x.shape[1] // 2)
         for finger, color in enumerate(pl.FINGER_COLORS):
-            f, coh = coherence(x, y[finger][None, :], fs=b.spec.target_sfreq, nperseg=nper, axis=-1)
+            f, coh = b.glove_coherence[finger]
             ax.plot(f, np.median(coh, axis=0), color=color, lw=1.0, label=pl.FINGERS[finger])
         ax.axvline(b.signal["glove"]["effective_fs_hz"] / 2, color=pl.MUTED, lw=0.8)
         ax.set(xscale="log", title=pl.subject_title(subject, "mediana de canales"), xlabel="Frecuencia (Hz)")
@@ -106,3 +102,19 @@ def run(ctx, subjects):
     axes[0, 1].set(ylabel="% de valores < 0 tras decimar", title="Rizado FIR (se reporta, no se recorta)")
     axes[0, 1].grid(axis="x", visible=False)
     ctx.save_fig(fig, "s07_antialias", "Respuesta del antialias y fracción de potencia negativa tras decimar")
+
+
+SECTION_NAME = 's07_decimation'
+TITLE = 'Decimación a 100 Hz'
+JUSTIFIES = 'Potencia Morlet a 100 Hz con antialias FIR (no submuestreo directo)'
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    b.power_envelopes = power_envelopes(b, config.data['eda']['correlation_excerpt_seconds'])
+    envelope = b.power_envelopes[0][:, -1]
+    b.direct_envelope = comparators.naive_slice(envelope, b.spec.factor)
+    b.antialiased_envelope = pp.decimate(envelope, b.spec.antialias, b.spec.factor)
+    x, y = b.hg100[:, b.valid100], b.glove100[0][:, b.valid100]
+    b.glove_coherence = [coherence(x, y[finger][None, :], fs=b.spec.target_sfreq,
+                                 nperseg=min(512, x.shape[1] // 2), axis=-1) for finger in range(5)]

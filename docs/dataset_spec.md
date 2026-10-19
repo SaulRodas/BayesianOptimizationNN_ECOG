@@ -81,6 +81,12 @@ Los números de canales validos difieren por sujeto tras la exclusión fija de `
 
 **Nota:** el test utiliza la misma transformación y retardo, pero sus etiquetas se leen solamente al abrir la etapa de evaluación final. La simple lectura de etiquetas de test durante EDA cuenta como acceso no autorizado.
 
+En 07, `read_final_test` exige aprobación del pipeline y `frozen.json` con todos los modelos
+A/B/C terminados antes de resolver `paths.test_labels_dir` (relativo a `TT_ECoG`). El adaptador
+lee exclusivamente `test_data` del archivo de competencia y `test_dg` del archivo de etiquetas,
+con SHA-256 antes/después y el mismo contrato MATLAB clásico/HDF5. El cargador de desarrollo
+mantiene su prohibición de claves y archivos de test.
+
 ## 5. Particiones y cobertura
 
 - **Desarrollo:** `train_data` y `train_dg`, divididos cronologicamente en cinco bloques B1-B5 por sujeto.
@@ -88,8 +94,11 @@ Los números de canales validos difieren por sujeto tras la exclusión fija de `
 - **Etapa 2:** validar B1, B2, B3, B4 y B5, uno por entrenamiento.
 - **Prueba independiente:** `test_data` y `test_dg`, reservados hasta evaluación final.
 - No existe intercambio de datos entre sujetos, ni tratamiento de folds disjuntos como una sola serie continua.
+- La duración final se elige con el fold B5 purgado, común a sujetos y variantes. En el refit
+  final los escaladores se ajustan con todo desarrollo válido; las ventanas conservan B1–B5
+  independientes. Un solo par de escaladores por sujeto sirve a A/B/C y nunca se ajusta en test.
 - La purga aprobada se define tras medir soporte temporal efectivo de filtros/Morlet; no asumir que 256 muestras bastan.
-- Al enmascarar artefactos, reconstruir trayectorias sobre sus segmentos validos sin interpolar huecos arbitrariamente para aumentar cobertura.
+- Las máscaras de validez corresponden a bordes, alineación y purga; no hay máscaras temporales de artefactos ni reparaciones locales.
 
 ## 6. Metadatos minimos y validaciones
 
@@ -122,10 +131,21 @@ Validar: claves esperadas; matrices bidimensionales de tipo numérico; finitud; 
 ## 7. Persistencia y restricciones
 
 - Mantener originales de solo lectura, fuera de Git.
-- Versionar arrays procesados o reportes mediante hash de configuración, sin sobrescribir silenciosamente.
+- Publicar arrays y folds bajo `data/processed/<pipeline_id>/`, esquema 2. La identidad combina el contrato efectivo y hashes numéricos; los reportes tienen su propio `run_id` y conservan el mismo `pipeline_id`. No sobrescribir corridas ni migrar el formato histórico.
 - Persistir escaladores **por fold** y sus hashes, nunca reutilizar ajustes de otro sujeto/fold.
 - No guardar checkpoints o reportes del test en la misma carpeta de desarrollo.
 - Conservar por sujeto el mapa entre canales de origen (índices 0-based), canales validos y su nueva posicion.
+- Optuna consume exclusivamente los folds preparados y aprobados. Los estudios de 05/06
+  conservan `pipeline_id`; cada entrenamiento por fold tiene su propio `run_id`, parámetros,
+  checkpoint e historial. Los estudios y checkpoints se guardan fuera de los arrays inmutables.
+- El 07 publica resultados fuera de desarrollo, en `results/evaluation/<run_id>/`. Por sujeto
+  conserva `scalers.npz` (centro/escala, mínimos/máximos y canales retenidos) y por variante
+  la selección interna, curvas y checkpoint final. `frozen.json` registra las decisiones y hashes.
+  `S*/test/` contiene verdad/predicciones en unidades originales, índices ECoG/flexión, máscara,
+  ventanas, cobertura y métricas; se publica solo al completarse. Los CSV y figuras comparan
+  los mismos instantes válidos para A/B/C. No se sobrescriben corridas históricas.
+
+El lector conjunto `read_development` abre solo `train_data` y `train_dg`, con hash del archivo antes y después. El EDA es opcional. Las referencias históricas a figuras no se resuelven para cargar datos.
 
 ## 8. Fuentes verificables
 

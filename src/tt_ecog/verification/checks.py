@@ -17,13 +17,13 @@ from scipy.stats import norm, pearsonr
 from .. import io as tio
 from .. import preprocessing as pp
 from ..datasets import inference_window_starts, n_windows, contiguous_runs, train_window_starts
-from ..eda import plotting as pl
+from .. import plotting as pl
 from ..metrics import trajectory_metrics
 from ..prep import blocks as prep_blocks
 from ..prep import folds as prep_folds
 from ..reporting import json_safe, write_json
 from ..splits import Fold, make_folds, train_eligibility
-from ..store import FOLD_MANIFEST, FOLDS_MANIFEST, read_json
+from ..io import FOLD_MANIFEST, FOLDS_MANIFEST, read_json
 from ..validation import score_validation
 from .runner import VerificationContext, check
 
@@ -61,7 +61,7 @@ def v01_integrity(ctx: VerificationContext):
         channels, samples = ecog.values.shape
         row = {"subject": subject, "file": ecog.metadata["path"], "sha256": digest,
                "unchanged_after_reading": tio.sha256_file(path) == digest,
-               "matches_eda_reference": True, "matches_processed_identity": identity["raw_sha256"].get(subject) == digest,
+               "matches_processed_identity": identity["raw_sha256"].get(subject) == digest,
                "adapter": ecog.metadata["adapter"], "stored_shape": ecog.metadata["original_shape"],
                "dtype": ecog.metadata["dtype"], "channels": channels, "samples": samples,
                "duration_s": ecog.metadata["duration_s"], "glove_shape": list(glove.values.shape),
@@ -112,7 +112,6 @@ def v02_exclusion(ctx: VerificationContext):
         if cmap.excluded and not (unchanged and sensitive):
             problems.append(f"{subject}: exclusion before CMR not demonstrated (unchanged={unchanged}, sensitive={sensitive})")
     _table(ctx, rows, "v02_exclusion", "Mapa original→efectivo, canales por bloque y CMR frente a transitorios extremos en canales excluidos")
-    ctx.save_json(ctx.reference, "v02_eda_reference", "Corrida EDA COMPLETE que respalda la exclusión (validada)")
     counts = "/".join(str(r["n_kept"]) for r in rows)
     return _verdict(problems, f"Exclusión S1-54, S2-20, S2-37 aplicada antes de la CMR; C_válidos {counts}; un "
                     "transitorio de 1e9 en los excluidos no cambia la CMR de los conservados (sí la cambiaría si se "
@@ -284,7 +283,7 @@ def v05_scalers(ctx: VerificationContext):
     channel_maps = read_json(ctx.pipeline_dir / "manifests/channel_map.json")
     rows, problems = [], []
     for subject in ctx.subjects:
-        blocks, arrays = prep_folds._subject_blocks(ctx.pipeline_dir, subject, ctx.block_names)
+        blocks, arrays = prep_folds.subject_blocks(ctx.pipeline_dir, subject, ctx.block_names)
         for fold in make_folds(blocks, ctx.val_names):
             folder = ctx.fold_folder(subject, fold.val.name)
             masks = {b.name: np.load(folder / f"eligible_{b.name}.npy") for b in fold.train}
@@ -521,7 +520,7 @@ def v09_filters(ctx: VerificationContext):
             problems.append(f"{design.name} taps differ from the persisted design")
     half = pp.chain_half_support(spec)
     mask_target = math.ceil(half / spec.factor)
-    measured = pp.measured_support(spec, ctx.config.data["eda"]["support_tolerance"])
+    measured = pp.measured_support(spec, ctx.config.data["verification"]["support_tolerance"])
     analytic_target = measured["analytic"]["total_half_support_samples_target"]
     if measured["measured_half_support_target"] > analytic_target:
         problems.append("measured support exceeds the analytic support")
@@ -778,7 +777,7 @@ def v14_metrics(ctx: VerificationContext):
     trace = {"git_commit": ctx.env["git_commit"], "git_dirty": ctx.env["git_dirty"], "source_sha256": ctx.env["source_sha256"],
              "versions": {k: ctx.env["versions"].get(k) for k in ("tt-ecog", "numpy", "scipy", "mne", "scikit-learn", "torch")},
              "python": ctx.env["python"], "config_sha256": ctx.config.sha256, "seed_base": seed,
-             "raw_sha256": ctx.raw_sha256, "eda_reference": {k: ctx.reference.get(k) for k in ("run_id", "artifact_manifest_sha256")},
+             "raw_sha256": ctx.raw_sha256, "pipeline_id": ctx.pipeline_dir.name,
              "pipeline_dir": ctx.pipeline_dir.name, "fold_set": ctx.fold_set_dir.name, "manifests_sha256": ctx.manifest_sha256,
              "purge": {"samples": ctx.purge, "status": ctx.purge_status},
              "scaler_sha256": {k: v for k, v in folds_manifest["files"].items() if "/scaler_" in k}}

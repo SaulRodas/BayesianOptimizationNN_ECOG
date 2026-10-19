@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 
 from ... import preprocessing as pp
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 from ._common import empty_panel, pearson_rows
 
 
@@ -29,14 +28,13 @@ def lagged_correlation(b, max_lag: int, min_lag: int):
     return lags, corr
 
 
-@section("s09_delay", "Retardo 200 ms", "Retardo fijo de 200 ms en la dirección ECoG(t) → flexión(t+0.2 s)")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     lag_range = ctx.eda["lag_range_seconds"]
     rows, peaks = [], []
     fig, axes = pl.figure(2, len(subjects), width=4.6, height=3.2)
     for col, (subject, b) in enumerate(subjects.items()):
         fs = b.spec.target_sfreq
-        lags, corr = lagged_correlation(b, int(round(lag_range[1] * fs)), int(round(lag_range[0] * fs)))
+        lags, corr = b.lagged_correlation
         seconds = lags / fs
         delay_s = b.spec.delay_samples / fs
         if np.isnan(corr).all():
@@ -94,3 +92,15 @@ def run(ctx, subjects):
         ax.legend(loc="upper left", fontsize=7)
     axes[0, 0].set_ylabel("Pares canal-dedo")
     ctx.save_fig(fig, "s09_peak_lags", "Distribución del retardo de máxima correlación: picos en retardos positivos (ECoG adelanta)")
+
+
+SECTION_NAME = 's09_delay'
+TITLE = 'Retardo 200 ms'
+JUSTIFIES = 'Retardo fijo de 200 ms en la dirección ECoG(t) → flexión(t+0.2 s)'
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    lag_range = config.data['eda']['lag_range_seconds']
+    fs = b.spec.target_sfreq
+    b.lagged_correlation = lagged_correlation(b, int(round(lag_range[1] * fs)), int(round(lag_range[0] * fs)))

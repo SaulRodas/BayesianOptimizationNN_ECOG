@@ -3,12 +3,14 @@
 **Proyecto:** Decodificación continua de la flexión de cinco dedos mediante señales electrocorticográficas (ECoG) y redes encoder–decoder 1D  
 **Fuente de datos:** BCI Competition IV — Dataset 4  
 **Sujetos:** S1, S2 y S3  
-**Versión documental:** 1.1 — EDA de justificación y exclusión fija de canales (sin etapa de QC con aprobación)  
+**Versión documental:** 1.2 — EDA opcional e identidad compartida del pipeline
 **Fecha:** 18 de octubre de 2026  
 **Entorno previsto:** Python, PyTorch, MNE-Python, scikit-learn, Optuna y Google Colab Pro  
 **Estado:** diseño de implementación; pendiente de verificación técnica integral y de definición posterior del número de épocas.
 
-> **Nota de cambio v1.1 (2026-10-18).** Por decisión de la persona usuaria se eliminó la etapa de control de calidad con umbrales, `qc_decisions.json` y aprobación. El flujo pasa a ser **EDA → Preprocesamiento**. La exclusión de canales es una lista fija (S1-54, S2-20, S2-37) definida en `configs/experiment_config.yaml` con su evidencia ECoG, y se aplica antes de la referencia común. Los parámetros explícitos de los filtros FIR y del antialias quedan fijados. Ver `docs/experimental_log.md` y `docs/channel_exclusion.md`.
+> **Cambio autorizado v1.2 (2026-10-18).** El EDA es descriptivo y opcional: no es precondición del preprocesamiento ni de la verificación. El flujo obligatorio comienza en 02 → 03. La exclusión fija y las decisiones científicas no cambian. El 02 publica un `pipeline_id` que el 03 y las etapas posteriores conservan; los hashes de código/configuración completa describen la ejecución, no crean otra identidad al cambiar de notebook.
+
+> **Antecedente v1.1 (2026-10-18).** Por decisión de la persona usuaria se eliminó la etapa de control de calidad con umbrales, `qc_decisions.json` y aprobación. El flujo de entonces, EDA → Preprocesamiento, fue sustituido por v1.2. Se mantiene la exclusión fija (S1-54, S2-20, S2-37) definida en `configs/experiment_config.yaml` con su evidencia ECoG, aplicada antes de la referencia común. Los parámetros explícitos de los filtros FIR y del antialias permanecen fijados. Ver `docs/experimental_log.md` y `docs/channel_exclusion.md`.
 
 > **Principio rector.** Implementar una sola cadena reproducible de análisis, limpieza, procesamiento, entrenamiento y evaluación para los tres sujetos. Antes de iniciar la optimización bayesiana se ejecutará una verificación técnica integral. Si todas las pruebas de esa verificación son satisfactorias, se congelarán la exclusión de canales, el preprocesamiento, la alineación temporal, las particiones, las métricas y la arquitectura parametrizable. Si alguna prueba falla, se corregirá únicamente el componente afectado, se regenerarán sus dependencias y se repetirán las pruebas pertinentes. **El número de épocas de entrenamiento no se determina en este documento**: se fijará posteriormente, con las señales ya verificadas y los recursos de Google Colab Pro.
 
@@ -64,12 +66,12 @@ TT-ECoG/
 │   ├── processed/                      # Datos transformados, versionados
 │   └── manifests/                      # Procedencia, particiones y checksums
 ├── notebooks/
-│   ├── 01_exploracion_ecog.ipynb        # EDA que justifica el preprocesamiento
+│   ├── 01_exploracion_ecog.ipynb        # EDA descriptivo opcional
 │   ├── 02_preprocesamiento_ecog.ipynb   # Exclusión de canales y características
 │   ├── 03_verificacion_pipeline.ipynb   # Pruebas de aprobación
-│   ├── 04_factibilidad_entrenamiento.ipynb
-│   ├── 05_optimizacion_etapa1.ipynb
-│   ├── 06_optimizacion_etapa2.ipynb
+│   ├── 04_entrenamiento.ipynb           # Recursos y piloto en el mismo notebook
+│   ├── 05_optuna_entrenamiento.ipynb
+│   ├── 06_optuna_arquitectura.ipynb
 │   └── 07_evaluacion_final.ipynb
 ├── src/tt_ecog/
 │   ├── io.py
@@ -104,14 +106,14 @@ TT-ECoG/
 │   ├── test_architecture.py
 │   └── test_metrics.py
 ├── docs/
-│   ├── implementation_protocol.md
+│   ├── protocolo_implementacion.md
 │   ├── channel_exclusion.md
 │   └── experimental_log.md
 ├── requirements.txt
 └── README.md
 ```
 
-**Convenciones:** rutas configurables, identificadores únicos de ejecución, semillas registradas, archivos `.mat` originales de solo lectura, artefactos derivados identificados por hash de configuración y ningún secreto embebido en el repositorio.
+**Convenciones:** rutas configurables, identificadores únicos de ejecución, semillas registradas, archivos `.mat` originales de solo lectura, artefactos derivados identificados por `pipeline_id` (contrato efectivo y contenido numérico) y ningún secreto embebido en el repositorio.
 
 ---
 
@@ -145,7 +147,7 @@ La separación de seguridad comenzará con **256 muestras a 100 Hz como candidat
 
 ---
 
-## 4. Paso 1 — EDA de justificación del preprocesamiento
+## 4. Notebook 01 — EDA descriptivo opcional
 
 **Responsables:** `01_exploracion_ecog.ipynb`, `tt_ecog/eda/` y `tt_ecog/descriptive.py`.
 **Entrada:** ECoG y guante del conjunto de desarrollo.
@@ -197,7 +199,7 @@ results/eda/<run_id>/
   artifact_manifest.json    # SHA-256 de cada archivo
 ```
 
-**Criterio de salida del paso 1:** los tres sujetos se describieron con el mismo procedimiento, las once secciones terminaron en `COMPLETE`, existe la figura de evidencia de cada canal excluido y los datos originales permanecen intactos.
+**Criterio de completitud del EDA opcional (no condiciona otras etapas):** los tres sujetos se describieron con el mismo procedimiento, las once secciones terminaron en `COMPLETE`, existe la figura de evidencia de cada canal excluido y los datos originales permanecen intactos.
 
 ---
 
@@ -292,7 +294,7 @@ Las convoluciones del filtrado, las wavelets y la decimación pueden utilizar mu
 ### 5.7. Archivos de salida
 
 ```text
-data/processed/<pipeline_hash>/
+data/processed/<pipeline_id>/
   S1/
     B1/ B2/ B3/ B4/ B5/
   S2/
@@ -305,7 +307,18 @@ data/processed/<pipeline_hash>/
     split_manifest.json
     filter_support.json
     processed_manifest.json
+  folds/
+    S1/val_B1/ ... val_B5/
+    S2/val_B1/ ... val_B5/
+    S3/val_B1/ ... val_B5/
+    folds_manifest.json
 ```
+
+El formato de persistencia es `schema_version: 2`. Se escribe primero en una carpeta provisional; solo una preparación completa se publica. Las corridas antiguas quedan intactas y no se migran automáticamente.
+
+El `pipeline_id` es SHA-256 canónico del contrato efectivo de datos y del inventario de hashes de arrays numéricos (características, objetivos, índices, máscaras, escaladores y ventanas). Incluye archivos originales, exclusiones, señal, particiones, purga efectiva y escalado. Excluye fechas, rutas, texto, figuras, EDA, aprobación y parámetros de entrenamiento. Si se aprueba el mismo valor de purga candidato, la identidad no cambia.
+
+Seleccionar explícitamente `paths.processed_pipeline_id` en el YAML con el valor emitido por 02. El 03 verifica y reutiliza esa identidad; nunca busca la corrida más reciente ni la recalcula desde su código o entorno. La aprobación y los reportes se guardan fuera de los datos inmutables. Las etapas posteriores registran ese mismo identificador junto con su propio `run_id`, commit, configuración completa, versiones y hashes de artefactos.
 
 Cada fold conservará escaladores entrenados, rangos temporales originales, máscaras de muestras válidas, lista de canales, forma de tensores, total de ventanas y procedencia reproducible.
 
@@ -468,6 +481,16 @@ Este paso se realiza **después de aprobar el paso 3** y **antes de iniciar las 
 
 ### 9.1. Recursos
 
+**Simplificación autorizada (2026-10-19):** integrar la comprobación de recursos al inicio del
+notebook de entrenamiento, sin una etapa de software ni notebook adicionales. La implementación
+de estas funciones puede prepararse antes de la aprobación del paso 3; su ejecución experimental
+sigue requiriendo esa aprobación. La comprobación inicial usa el sujeto de más canales, un fold
+de etapa 1 y tres arquitecturas (pequeña, referencia y grande), con dos actualizaciones de
+calentamiento y tres medidas por modelo. Un OOM se registra y requiere repetir con otro candidato
+de batch, sin reducirlo silenciosamente. Los tiempos iniciales son estimaciones de entrenamiento;
+el piloto mide épocas completas con validación. Esta comprobación breve no certifica por sí sola
+todas las arquitecturas ni determina automáticamente el batch común.
+
 - Registrar la GPU realmente asignada por Colab Pro, memoria física, CUDA, versiones de PyTorch y duración de cada sesión.
 - Verificar al menos arquitecturas representativas pequeñas, medianas y grandes, incluyendo el caso de mayor consumo (`L=5`, `f=96`).
 - Medir memoria pico de PyTorch **durante varios pasos completos de forward + backward + actualización**, no únicamente en un forward.
@@ -477,6 +500,12 @@ Este paso se realiza **después de aprobar el paso 3** y **antes de iniciar las 
 ### 9.2. Decisión pendiente: número de épocas
 
 El protocolo **no define actualmente** cuántas épocas utilizarán las búsquedas ni el máximo final.
+
+**Propuesta de la persona usuaria (2026-10-19): 50 épocas**, registrada en
+`training.search_epochs_candidate`. Se puede ejecutar un piloto acotado con ese presupuesto
+después de la aprobación del pipeline. Sus curvas permiten revisar la propuesta; no constituyen
+una aprobación automática ni evidencia de convergencia para todos los sujetos y tasas de aprendizaje.
+`training.search_epochs` y `training.final_max_epochs` permanecen pendientes y separados.
 
 Para cerrar esta decisión:
 
@@ -494,6 +523,10 @@ Para cerrar esta decisión:
 ## 10. Paso 5 — Optimización bayesiana secuencial
 
 ### 10.1. Requisitos de inicio
+
+**Preparación autorizada (2026-10-19):** implementar ahora los notebooks 05/06 y sus funciones
+reutilizables. Esta autorización permite probarlos con datos sintéticos; no inicia búsquedas
+experimentales ni resuelve los valores pendientes del YAML. Se conservan los requisitos de ejecución siguientes.
 
 No iniciar búsquedas hasta contar con: pipeline congelado, las 14 verificaciones completas, presupuesto de épocas decidido y factibilidad de memoria/tiempo comprobada.
 
@@ -553,6 +586,16 @@ Este presupuesto **excluye** EDA, verificación, evaluación de factibilidad, en
 - Respaldar la base de datos y archivos de estudio en almacenamiento persistente; no asumir que la sesión de Colab continuará activa.
 - Evitar escrituras concurrentes de múltiples procesos sobre una base SQLite alojada directamente en una unidad sincronizada.
 
+La implementación usa SQLite en un directorio temporal local y publica atómicamente `study.zip`
+en `results/optimization/<pipeline_id>/<sujeto>/<etapa>/`. El archivo reúne la base y el estado
+del sampler, con versión de Optuna registrada. Usar un único runtime escritor por estudio;
+no abrir el mismo estudio desde dos sesiones de Colab simultáneas.
+El archivo se actualiza antes de entrenar una propuesta y al completar cada fold y trial.
+Cada fold guarda además su última época completa en Drive, junto con AdamW, RNG e historial.
+Al reconectar se recupera el trial RUNNING y se conservan los folds terminados. Los estados FAIL
+se informan y detienen el estudio; no se agregan propuestas ni reintentos automáticamente.
+La etapa 2 exige los 20 trials completos de la etapa 1 para ese mismo sujeto y contrato de ejecución.
+
 ---
 
 ## 11. Paso 6 — Entrenamiento final y evaluación comparativa
@@ -567,13 +610,21 @@ Todos se entrenan de nuevo desde cero, con el mismo pipeline, política de semil
 
 ### 11.2. Procedimiento
 
-1. Seleccionar la duración final usando exclusivamente desarrollo y un esquema interno común de validación.
-2. Opcionalmente, reentrenar sobre todo el desarrollo una vez establecida la duración, sin consultar prueba.
+1. Seleccionar la duración final usando exclusivamente desarrollo. **Decisión autorizada el 2026-10-19:** usar el fold purgado B5 como validación interna común para A/B/C y los tres sujetos (`training.final_validation_block: B5`). La duración corresponde al mayor `val_pearson_full` observado, con el primer empate; la paciencia cuenta épocas sin una mejora mayor que `min_delta`. Máximo, paciencia y `min_delta` siguen pendientes de evidencia de desarrollo.
+2. Reentrenar desde cero sobre todo el desarrollo durante la duración seleccionada, como fija `final_retrain_full_development_after_epoch_selection: true`. Reajustar escaladores con las columnas válidas de desarrollo, compartidos por A/B/C; conservar los límites originales B1–B5 y sus guardas. No consultar prueba.
 3. Guardar checkpoint, escaladores, lista de canales (mapa original→efectivo) y configuración.
 4. Aplicar al test la **misma** exclusión de canales, el mismo preprocesamiento y la misma alineación de 200 ms; no ajustar parámetros con el test.
 5. Inferir por ventanas y reconstruir con overlap-add, respetando las máscaras de validez predefinidas.
 6. Calcular las métricas en los instantes válidos de la línea temporal correspondiente; no elegir cobertura después de observar las predicciones.
 7. Si se repiten semillas, usar un conjunto de semillas predefinido y reportar todas las ejecuciones sin seleccionar la mejor a partir de test.
+
+La preparación de `07_evaluacion_final.ipynb` y sus pruebas sintéticas fue autorizada el
+2026-10-19 antes de completar experimentos reales. La ejecución conserva los bloqueos del
+protocolo: V01–V14 aprobado, estudios 05/06 completos y parámetros finales decididos. Los
+nueve modelos, escaladores, parámetros y duraciones se congelan antes del primer acceso a
+test. La selección de B5 sirve para elegir duración, no para reportar desempeño independiente
+tras la búsqueda. Las interrupciones recuperan la última época completa; tras abrir test solo
+se permite completar inferencia o reportes con los modelos ya congelados.
 
 ### 11.3. Métricas y productos finales
 
@@ -609,13 +660,13 @@ results/<fase>/<sujeto>/<run_id>/
   predictions/                # para evaluación y diagnóstico
 ```
 
-Cada archivo de métricas por época debe registrar, al menos: `run_id`, `subject`, `fold`, `seed`, `epoch`, `train_loss`, `val_pearson_full` cuando se calcule, `lr`, `elapsed_seconds` y, cuando proceda, tiempo y memoria máximos de la GPU.
+Cada archivo de métricas por época debe registrar, al menos: `pipeline_id`, `run_id`, `subject`, `fold`, `seed`, `epoch`, `train_loss`, `val_pearson_full` cuando se calcule, `lr`, `elapsed_seconds` y, cuando proceda, tiempo y memoria máximos de la GPU.
 
 ### 12.2. Metadatos obligatorios
 
 - Semillas Python/NumPy/PyTorch, determinismo y versiones de bibliotecas.
 - Identificador de sujeto, canales originales y canales utilizados.
-- Exclusión de canales aplicada y corrida de EDA de referencia (`run_id`).
+- Exclusión de canales aplicada y `pipeline_id` seleccionado. El EDA, si se ejecutó, tiene su propio `run_id` descriptivo y no forma parte de la identidad.
 - Versiones y hashes de preprocesamiento, folds y escaladores.
 - Arquitectura, LR, weight decay, batch size y **número de épocas efectivamente utilizado**.
 - Modelo de GPU de Colab, memoria total, memoria pico reservada/asignada, tiempos y fallos.
@@ -625,7 +676,7 @@ Cada archivo de métricas por época debe registrar, al menos: `run_id`, `subjec
 
 | Situación | Acción |
 |---|---|
-| EDA incompleto (alguna sección no `COMPLETE`) | No iniciar preprocesamiento definitivo |
+| EDA ausente o incompleto | Registrar su propio estado; no bloquea 02 ni 03 |
 | Paso 3 falla | Corregir únicamente el componente defectuoso y repetir las pruebas dependientes |
 | Paso 3 pasa | Congelar los componentes metodológicos comprobados |
 | Épocas sin definir | Realizar análisis posterior de convergencia; no lanzar Optuna |
@@ -639,7 +690,7 @@ Cada archivo de métricas por época debe registrar, al menos: `run_id`, `subjec
 
 | Orden | Actividad | Entregable | Condición para avanzar |
 |---|---|---|---|
-| **1** | EDA de justificación de S1/S2/S3 | Figuras, tablas y manifiestos en `results/eda/<run_id>/` | Once secciones `COMPLETE` y evidencia de exclusiones |
+| **Opcional** | EDA descriptivo de S1/S2/S3 | Figuras, tablas y manifiestos en `results/eda/<run_id>/` | No condiciona otras etapas |
 | **2** | Preprocesamiento y generación de datos por fold | Datos procesados, escaladores y manifiestos | Datos generados y trazables |
 | **3** | Verificación técnica integral | Informe de las 14 pruebas | **Todas aprobadas** |
 | **4** | Medición de factibilidad en Colab Pro | Perfil de GPU, memoria, tiempo y batch común | Recursos viables |

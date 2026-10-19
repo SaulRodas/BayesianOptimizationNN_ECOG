@@ -13,11 +13,16 @@ project:
 
 paths:
   raw_dir: raw  # Relativo a persistent_storage_dir, en Drive
+  processed_pipeline_id: null  # Copiar el pipeline_id generado por 02; compartido desde 03
   processed_dir: data/processed
   manifests_dir: data/manifests
   results_dir: results
   eda_dir: results/eda
   preprocessing_dir: results/preprocessing  # Evidencia de cada corrida del paso 2
+  training_dir: results/training
+  optimization_dir: results/optimization
+  evaluation_dir: results/evaluation
+  final_run_id: null  # 07 muestra el ID; copiar aqui para reanudar, nunca elegir el mas reciente
   verification_dir: results/verification  # Reportes V01-V14 del paso 3
   test_labels_dir: null  # Resolucion permitida SOLO en evaluacion final
   persistent_storage_dir: TT_ECoG  # Relativo al directorio MyDrive montado
@@ -42,9 +47,6 @@ channels:  # Exclusion fija; se aplica en preprocesamiento ANTES de la CMR
   index_convention: zero_based
   application_stage: preprocessing_before_common_reference
   selection_basis: ecog_acquisition_evidence_only  # nunca etiquetas, predicciones ni Pearson
-  # run_id de la corrida EDA COMPLETE en results/eda/<run_id>/ que contiene la evidencia;
-  # el paso 2 la valida (estado, hashes de los .mat, exclusiones, figuras) antes de procesar
-  reference_run: '20261019T004831Z_3a68db'
   excluded:
     S1:
       - index: 54
@@ -73,7 +75,6 @@ eda:  # Resoluciones descriptivas del EDA; no son decisiones ni umbrales
   correlation_excerpt_seconds: 60.0
   lag_range_seconds: [-1.0, 1.0]
   autocorr_max_lag_seconds: 10.0
-  support_tolerance: 1.0e-6
   diagnostic_morlet:  # solo para el ERSP de justificacion de banda
     freq_range_hz: [4, 250]
     n_frequencies: 50
@@ -206,7 +207,11 @@ training:
   batch_size: null  # Definir con memoria medida en la GPU real de Colab Pro
   batch_size_initial_candidate: 128
   search_epochs: null  # DECISION POSTERIOR tras estudio de convergencia
+  search_epochs_candidate: 50  # Propuesta de la persona usuaria; piloto, no aprobacion automatica
+  profile_warmup_steps: 2
+  profile_measured_steps: 3
   final_max_epochs: null  # DECISION POSTERIOR, separada de search_epochs
+  final_validation_block: B5  # Autorizado: bloque interno comun para A/B/C y los tres sujetos
   search_early_stopping: false
   search_checkpoint_selection: last_epoch
   search_checkpoint_metric: val_pearson_full
@@ -258,6 +263,7 @@ optimization:
     combined_search_fits: 270
 
 verification:
+  support_tolerance: 1.0e-6  # Tolerancia del soporte medido, independiente del EDA
   required_test_ids: [V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V14]
   status: pending
   all_pass_required: true

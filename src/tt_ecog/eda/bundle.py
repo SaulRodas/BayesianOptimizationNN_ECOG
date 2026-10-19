@@ -1,11 +1,10 @@
-"""Per-subject data and cached derivatives, always computed with ``preprocessing``.
+"""Per-subject data and explicitly calculated derivatives, always computed with ``preprocessing``.
 
 The EDA processes the whole development record as ONE segment and only in
 memory, to draw figures. Nothing here is persisted as processed data and
 nothing feeds notebook 02, which recomputes from raw data per fold segment.
 """
 
-from functools import cached_property
 from typing import Any
 
 import numpy as np
@@ -40,22 +39,6 @@ class SubjectBundle:
     def cmap(self) -> pp.ChannelMap:
         return self.spec.channels
 
-    @cached_property
-    def kept(self) -> np.ndarray:
-        return pp.exclude_channels(self.raw, self.cmap)
-
-    @cached_property
-    def cmr(self) -> np.ndarray:
-        return pp.common_median_reference(self.kept)
-
-    @cached_property
-    def filtered(self) -> np.ndarray:
-        return pp.apply_fir(self.cmr, self.spec.fir)
-
-    @cached_property
-    def _power(self) -> tuple[np.ndarray, dict[str, Any]]:
-        return pp.morlet_power_decimated(self.filtered, self.spec)
-
     @property
     def power100(self) -> np.ndarray:
         return self._power[0]
@@ -64,53 +47,25 @@ class SubjectBundle:
     def power_report(self) -> dict[str, Any]:
         return self._power[1]
 
-    @cached_property
-    def t100(self) -> np.ndarray:
-        return pp.output_times(self.n_samples, self.spec.factor, self.fs)
-
-    @cached_property
-    def edge100(self) -> int:
-        """Target samples at each record edge that depend on padding."""
-        return pp.support_report(self.spec)["total_half_support_samples_target"]
-
-    @cached_property
-    def hg100(self) -> np.ndarray:
+    def compute_hg100(self) -> np.ndarray:
         """log10 of the 40-200 Hz band-mean power, (C_kept, T100)."""
         return np.log10(np.maximum(self.power100.mean(axis=1, dtype=np.float64),
                                    self.eda["numerical_epsilon"]))
 
     # ------------------------------------------------------------- glove
-    @cached_property
-    def glove_inspection(self) -> dict[str, Any]:
-        return pp.glove_storage_inspection(self.glove_record.values,
-                                           self.glove_record.metadata["sampling_hz_glove_storage"], self.spec)
-
-    @cached_property
-    def glove25(self) -> tuple[np.ndarray, np.ndarray]:
+    def compute_glove25(self) -> tuple[np.ndarray, np.ndarray]:
         """Effective glove samples and their physical times (first row of each hold)."""
         y25, knots = pp.effective_glove(self.glove_record.values, self.glove_inspection, self.spec)
         return y25, knots / self.fs
 
-    @cached_property
-    def glove100(self) -> tuple[np.ndarray, np.ndarray]:
-        y25, t25 = self.glove25
-        return pp.interpolate_glove(t25, y25, self.t100)
-
-    @cached_property
-    def movement(self) -> MovementInfo:
+    def compute_movement(self) -> MovementInfo:
         y25, t25 = self.glove25
         movement = self.eda["movement"]
         return detect_movement(y25, t25, self.t100, movement["speed_quantile"],
                                movement["min_interonset_seconds"])
 
-    @cached_property
-    def valid100(self) -> np.ndarray:
-        """Target samples with interpolated glove and interior ECoG features."""
-        return self.glove100[1] & pp.feature_valid_mask(self.n_samples, self.spec)
-
     # ------------------------------------------------------------- descriptive
-    @cached_property
-    def local_std(self) -> tuple[np.ndarray, np.ndarray]:
+    def compute_local_std(self) -> tuple[np.ndarray, np.ndarray]:
         window = int(round(self.eda["window_seconds"] * self.fs))
         return windowed_std(self.raw, window)
 
@@ -118,24 +73,20 @@ class SubjectBundle:
         return welch_psd(values, self.fs, window_seconds or self.eda["psd_window_seconds"],
                          self.eda["psd_overlap_fraction"])
 
-    @cached_property
-    def raw_psd(self) -> tuple[np.ndarray, np.ndarray]:
+    def compute_raw_psd(self) -> tuple[np.ndarray, np.ndarray]:
         return self._psd(self.raw)
 
-    @cached_property
-    def cmr_psd(self) -> tuple[np.ndarray, np.ndarray]:
+    def compute_cmr_psd(self) -> tuple[np.ndarray, np.ndarray]:
         return self._psd(self.cmr)
 
-    @cached_property
-    def filtered_psd(self) -> tuple[np.ndarray, np.ndarray]:
+    def compute_filtered_psd(self) -> tuple[np.ndarray, np.ndarray]:
         return self._psd(self.filtered)
 
     def line_fraction(self, freq: np.ndarray, psd: np.ndarray) -> np.ndarray:
         return band_line_fraction(freq, psd, self.signal["bandpass_hz"], self.signal["notch_hz"],
                                   self.eda["line_half_width_hz"], self.eda["numerical_epsilon"])[1]
 
-    @cached_property
-    def channel_summary(self) -> pd.DataFrame:
+    def compute_channel_summary(self) -> pd.DataFrame:
         stds, _ = self.local_std
         typical = np.median(stds, axis=1)
         ratio = stds / np.maximum(typical[:, None], self.eda["numerical_epsilon"])
@@ -159,19 +110,16 @@ class SubjectBundle:
         frame["line_fraction_raw"] = self.line_fraction(freq, psd)
         return frame
 
-    @cached_property
-    def std_ratio(self) -> np.ndarray:
+    def compute_std_ratio(self) -> np.ndarray:
         stds, _ = self.local_std
         typical = np.median(stds, axis=1, keepdims=True)
         return stds / np.maximum(typical, self.eda["numerical_epsilon"])
 
-    @cached_property
-    def blocks(self):
+    def compute_blocks(self):
         validation = self.config.data["validation"]
         return chronological_blocks(self.n_samples, validation["block_names"], self.spec.factor)
 
-    @cached_property
-    def descriptive_channel(self) -> int:
+    def compute_descriptive_channel(self) -> int:
         """Effective index of the kept channel whose high-gamma power correlates best
         with flexion at the protocol delay. Chosen only to illustrate figures; it
         drives no decision."""
@@ -189,3 +137,38 @@ class SubjectBundle:
         center = self.n_samples // 2 if center_s is None else int(round(center_s * self.fs))
         start = int(np.clip(center - n // 2, 0, self.n_samples - n))
         return slice(start, start + n)
+
+
+def calculate_overview(subjects):
+    for b in subjects.values():
+        b.kept = pp.exclude_channels(b.raw, b.cmap)
+        b.common = pp.common_median(b.kept)
+        b.local_std = b.compute_local_std()
+        b.std_ratio = b.compute_std_ratio()
+        b.raw_psd = b.compute_raw_psd()
+        b.channel_summary = b.compute_channel_summary()
+
+
+def calculate_reference(subjects):
+    for b in subjects.values():
+        b.kept = pp.exclude_channels(b.raw, b.cmap)
+        b.cmr = pp.common_median_reference(b.kept)
+        b.filtered = pp.apply_fir(b.cmr, b.spec.fir)
+        b.cmr_psd = b.compute_cmr_psd()
+        b.filtered_psd = b.compute_filtered_psd()
+
+
+def calculate_features_and_glove(subjects):
+    for b in subjects.values():
+        b._power = pp.morlet_power_decimated(b.filtered, b.spec)
+        b.t100 = pp.output_times(b.n_samples, b.spec.factor, b.fs)
+        b.edge100 = pp.support_report(b.spec)["total_half_support_samples_target"]
+        b.hg100 = b.compute_hg100()
+        b.glove_inspection = pp.glove_storage_inspection(b.glove_record.values,
+            b.glove_record.metadata["sampling_hz_glove_storage"], b.spec)
+        b.glove25 = b.compute_glove25()
+        b.glove100 = pp.interpolate_glove(b.glove25[1], b.glove25[0], b.t100)
+        b.valid100 = b.glove100[1] & pp.feature_valid_mask(b.n_samples, b.spec)
+        b.movement = b.compute_movement()
+        b.blocks = b.compute_blocks()
+        b.descriptive_channel = b.compute_descriptive_channel()

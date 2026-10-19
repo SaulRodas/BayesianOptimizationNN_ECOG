@@ -8,12 +8,33 @@ Orden de autoridad en conflictos: (1) `docs/protocolo_implementacion.md`; (2) `d
 
 El número de épocas de búsqueda, la duración máxima final, el batch size común y la purga efectiva permanecen PENDIENTES. Los campos `null` del YAML son bloqueos deliberados, no licencias para sustituirlos por valores por defecto.
 
-**Cambio metodológico autorizado (2026-10-18, protocolo v1.1):** se eliminó la etapa de QC con umbrales, `qc_decisions.json` y aprobación. El flujo es **EDA → Preprocesamiento**, directo. La exclusión de canales es una lista fija en el YAML (ver reglas). Ver `docs/experimental_log.md` y `docs/channel_exclusion.md`.
+**Continuación autorizada (2026-10-19):** implementar el entrenamiento reutilizable y una
+comprobación breve de recursos integrada en `04_entrenamiento.ipynb`, sin un notebook separado
+de factibilidad. La persona usuaria propone 50 épocas: `training.search_epochs_candidate: 50`
+para el piloto; no equivale a aprobar `search_epochs` ni `final_max_epochs`. Conservar únicamente
+las comprobaciones necesarias para datos aprobados, aislamiento, finitud, cobertura y memoria.
+Preparar este código no autoriza a ejecutar entrenamientos reales ni Optuna antes de V01–V14.
+
+**Preparación de Optuna autorizada (2026-10-19):** implementar 05/06 y probar sus operaciones
+con datos sintéticos antes de ejecutar experimentos. Mantener los presupuestos 20×2 y 10×5,
+la referencia dentro de las diez propuestas y el mismo `pipeline_id`. La ejecución real sigue
+condicionada a V01–V14 aprobado, purga, batch común y épocas de búsqueda decididos. Recuperar
+estudios sin ampliar presupuestos ni reemplazar trials fallidos automáticamente.
+
+**Preparación de 07 autorizada (2026-10-19):** implementar selección de épocas, reentrenamiento
+y evaluación A/B/C con pruebas sintéticas. La persona usuaria eligió **B5** como validación
+interna común para los tres sujetos y variantes; después se reentrena con todo desarrollo,
+manteniendo los bloques independientes y ajustando escaladores solo con desarrollo.
+Máximo final, paciencia y min_delta siguen pendientes. Congelar los nueve modelos antes de
+abrir test; no reentrenar ni retocar decisiones después. Preparar código no autoriza la ejecución
+experimental, que requiere aprobación V01–V14, 05/06 completos y decisiones finales documentadas.
+
+**Cambio metodológico autorizado (2026-10-18, protocolo v1.1):** se eliminó la etapa de QC con umbrales, `qc_decisions.json` y aprobación. El flujo obligatorio es **02 Preprocesamiento → 03 Verificación**; el EDA es opcional (actualización autorizada v1.2). La exclusión de canales es una lista fija en el YAML (ver reglas). Ver `docs/experimental_log.md` y `docs/channel_exclusion.md`.
 
 ## Plan de implementación obligatorio
 
 1. Crear cargadores y contratos del dataset, con comprobaciones de formato, hashes y tests sintéticos.
-2. Implementar `01_exploracion_ecog.ipynb`: EDA descriptivo de los tres sujetos que justifica con gráficas cada decisión de preprocesamiento (exclusión de canales, CMR, banda, notch, Morlet, decimación, guante, retardo, escalado y bloques). Las transformaciones se aplican solo **en memoria** con `tt_ecog.preprocessing` para graficar: **no persistir datos transformados** en esta etapa.
+2. Mantener `01_exploracion_ecog.ipynb` como herramienta opcional: EDA descriptivo de los tres sujetos que justifica con gráficas cada decisión de preprocesamiento (exclusión de canales, CMR, banda, notch, Morlet, decimación, guante, retardo, escalado y bloques). Las transformaciones se aplican solo **en memoria** con `tt_ecog.preprocessing` para graficar: **no persistir datos transformados** en esta etapa.
 3. Implementar `02_preprocesamiento_ecog.ipynb`: aplicar la exclusión fija de canales (`channels.excluded`) sobre datos crudos, referencia de mediana común instantanea, filtrado, Morlet, decimacion, alineación, particiones y escaladores por fold, reutilizando las primitivas de `tt_ecog.preprocessing` (ya implementadas y probadas). No concatenar segmentos separados temporalmente.
 4. Implementar U-Net 1D parametrizable, funciones de perdida y métricas minimas para poder ejecutar V13 y V14, sin realizar entrenamientos experimentales.
 5. Implementar `03_verificacion_pipeline.ipynb` y `tests/` según V01-V14 de `docs/validation_requirements.md`. Guardar evidencias y manifiestos PASS/FAIL. **No avanzar** con pruebas pendientes, omitidas o fallidas.
@@ -40,7 +61,7 @@ El número de épocas de búsqueda, la duración máxima final, el batch size co
 
 ## Reglas de código y seguridad
 
-- Python modular y tipado cuando sea práctico. Una sola implementación de transformaciones, perdida y métricas; notebooks ligeros. Las gráficas antes/después del EDA llaman a `tt_ecog.preprocessing`; las alternativas de contraste (CAR, submuestreo directo, interpolación lineal) viven solo en `tt_ecog/eda/comparators.py` y nunca entran al pipeline.
+- Python modular y tipado cuando sea práctico. Una sola implementación de transformaciones, perdida y métricas; notebooks con operaciones explícitas en celdas, sin reimplementar las primitivas. Las gráficas antes/después del EDA llaman a `tt_ecog.preprocessing`; las alternativas de contraste (CAR, submuestreo directo, interpolación lineal) viven solo en `tt_ecog/eda/comparators.py` y nunca entran al pipeline.
 - Configuración única por YAML y parámetros/paths relativos; prohibido repetir bloques de configuración escritos a mano en notebooks.
 - No incluir tokens, secretos, rutas privadas ni claves W&B en código/documentación. No copiar sin inspección scripts heredados al repositorio.
 - No guardar datos ECoG crudos, etiquetas de prueba, checkpoints ni estudios Optuna grandes en Git. Usar Google Drive o almacenamiento persistente externo y guardar hashes en manifiestos.
@@ -58,7 +79,7 @@ El número de épocas de búsqueda, la duración máxima final, el batch size co
 
 ## Definition of Done por etapa
 
-- EDA: tres sujetos descritos; las 11 secciones en `COMPLETE` con figuras, tablas y `artifact_manifest.json` en Drive; figura de evidencia de cada canal excluido presente.
+- EDA opcional (sin bloquear otras etapas): tres sujetos descritos; las 11 secciones en `COMPLETE` con figuras, tablas y `artifact_manifest.json` en Drive; figura de evidencia de cada canal excluido presente.
 - Preprocesamiento: arrays y metadatos trazables; exclusión de canales aplicada antes de la CMR con mapa original→efectivo; labels de test sin tocar.
 - Paso 3: V01-V14 PASS real (no mocks que simulen exito), reporte, hashes y evidencia persistidos. De no haber archivos `.mat`, informar BLOQUEADO, no PASS.
 - Factibilidad: GPU real, memoria peak en entrenamiento, batch común y costos documentados.
@@ -66,3 +87,11 @@ El número de épocas de búsqueda, la duración máxima final, el batch size co
 - Evaluación: tres variantes A/B/C, por sujeto y dedo; métrica Pearson principal, CCC y errores secundarios, misma cobertura y criterios.
 
 Para iniciar: leer `docs/CODEX_START.md`, `docs/protocolo_implementacion.md` y `docs/validation_requirements.md`, confirmar la estructura del dataset sin inspeccionar las etiquetas de test y desarrollar por fases. No lanzar Optuna de forma automática.
+
+## Reorganización autorizada v1.2 (2026-10-18)
+
+- No requerir `channels.reference_run`, corrida EDA COMPLETE ni figuras para 02/03. Las exclusiones fijas y sus razones permanecen en el YAML.
+- 02 publica un `pipeline_id` SHA-256 de contrato efectivo y arrays numéricos. 03 y etapas posteriores lo leen desde la selección `paths.processed_pipeline_id` y lo conservan. No usar hashes de notebook, fechas, aprobación o parámetros de entrenamiento como identidad de datos.
+- Cada ejecución tiene un `run_id`; conservar procedencia completa y hashes individuales automáticamente. Aprobar el mismo valor de purga no cambia el pipeline.
+- Usar esquema de persistencia 2; preservar corridas históricas, sin conversión ni sobrescritura. No publicar carpetas provisionales incompletas.
+- Mostrar las operaciones reales en las celdas, con entradas y resultados inspeccionables. Persistencia en `io`, reportes en `reporting`; ninguna dependencia operativa del EDA.

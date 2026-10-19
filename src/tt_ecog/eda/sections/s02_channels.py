@@ -7,15 +7,12 @@ import pandas as pd
 
 from ... import preprocessing as pp
 from ...descriptive import grouped_intervals
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 
 EXCLUDED_STYLES = [pl.EXCLUDED, pl.SLOTS[6], pl.SLOTS[1]]
 
 
-@section("s02_channels", "Canales atípicos",
-         "Exclusión fija de S1-54, S2-20 y S2-37 antes de la CMR (evidencia solo de ECoG)")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     levels = ctx.eda["std_ratio_levels"]
     summary = pd.concat([b.channel_summary for b in subjects.values()], ignore_index=True)
     ctx.save_table(summary, "channel_summary", "Resumen por canal: STD local, cociente pico/típico, fracción de ventanas y línea")
@@ -83,7 +80,7 @@ def run(ctx, subjects):
     window_s = ctx.eda["window_seconds"]
     context_s = ctx.eda["episode_context_seconds"]
     for subject, b in subjects.items():
-        common = pp.common_median(b.kept)
+        common = b.common
         for entry in ctx.config.channel_exclusions(subject):
             channel = entry["index"]
             figure_path = PurePosixPath(entry["evidence_figure"])
@@ -148,3 +145,8 @@ def run(ctx, subjects):
         ax.legend(loc="lower left")
     axes[0, 0].set_ylabel("PSD (u.o.²/Hz)")
     ctx.save_fig(fig, "s02_excluded_psd", "PSD de los canales excluidos frente a la banda de los conservados")
+
+
+SECTION_NAME = 's02_channels'
+TITLE = 'Canales atípicos'
+JUSTIFIES = 'Exclusión fija de S1-54, S2-20 y S2-37 antes de la CMR (evidencia solo de ECoG)'

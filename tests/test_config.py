@@ -100,16 +100,16 @@ def test_antialias_must_respect_target_nyquist(config, tmp_path):
         load_config(write(tmp_path, data))
 
 
-def test_reference_run_and_preprocessing_path(config, tmp_path):
-    assert config.data["channels"]["reference_run"] == "20261019T004831Z_3a68db"
-    assert config.path(tmp_path, "preprocessing_dir").name == "preprocessing"
+def test_selected_pipeline_id(config, tmp_path):
+    assert "reference_run" not in config.data["channels"]
+    assert config.data["paths"]["processed_pipeline_id"] is None
     data = deepcopy(config.data)
-    data["channels"]["reference_run"] = None
-    assert load_config(write(tmp_path, data)).data["channels"]["reference_run"] is None
-    for bad in ("eda_qc_review/20261018T230228Z", "20261019T004831Z", 20261019):
-        data["channels"]["reference_run"] = bad
-        with pytest.raises(ConfigError, match="reference_run"):
+    for bad in ("../outside", "a" * 16, 42, "z" * 64):
+        data["paths"]["processed_pipeline_id"] = bad
+        with pytest.raises(ConfigError, match="processed_pipeline_id"):
             load_config(write(tmp_path, data))
+    data["paths"]["processed_pipeline_id"] = "a" * 64
+    assert load_config(write(tmp_path, data)).data["paths"]["processed_pipeline_id"] == "a" * 64
 
 
 def test_purge_is_pending_and_only_ever_a_labelled_candidate(config, tmp_path):

@@ -36,12 +36,14 @@ def test_windowed_std_and_line_fraction():
 
 
 def test_channel_summary_does_not_depend_on_glove(config, data_root):
-    from tt_ecog.eda.bundle import SubjectBundle
+    from tt_ecog.eda.bundle import SubjectBundle, calculate_overview
     write_subject(data_root, config, n=4000)
     first = read_ecog(config, data_root, "S1")
-    a = SubjectBundle(config, first, read_development_glove(config, data_root, first)).channel_summary
+    a = SubjectBundle(config, first, read_development_glove(config, data_root, first))
+    calculate_overview({"S1": a})
     write_subject(data_root, config, n=4000, values=first.values.T, labels=np.full((4000, 5), 1e8))
     second = read_ecog(config, data_root, "S1")
-    b = SubjectBundle(config, second, read_development_glove(config, data_root, second)).channel_summary
+    b = SubjectBundle(config, second, read_development_glove(config, data_root, second))
+    calculate_overview({"S1": b})
     import pandas as pd
-    pd.testing.assert_frame_equal(a, b)
+    pd.testing.assert_frame_equal(a.channel_summary, b.channel_summary)

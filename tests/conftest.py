@@ -115,43 +115,24 @@ def config_copy(tmp_path):
 
 # --------------------------------------------------------------------------- step 2 on synthetic data
 
-EDA_RUN_ID = "20260101T000000Z_abcdef"
 SUBJECTS = ("S1", "S2", "S3")
 
 
-def project(base, reference_run=EDA_RUN_ID, **validation):
-    """Project shell whose YAML points to a synthetic EDA run (and optional validation overrides)."""
+def project(base, processed_pipeline_id=None, **validation):
+    """Project shell with explicit pipeline selection and optional validation overrides."""
     (base / "p/configs").mkdir(parents=True)
     data = yaml.safe_load((ROOT / "configs/experiment_config.yaml").read_text(encoding="utf-8"))
-    data["channels"]["reference_run"] = reference_run
+    data["paths"]["processed_pipeline_id"] = processed_pipeline_id
     data["validation"].update(validation)
     path = base / "p/configs/experiment_config.yaml"
     path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
     return path
 
 
-def write_eda_evidence(config, drive, raw_paths, run_id=EDA_RUN_ID):
-    """Minimal COMPLETE EDA run folder describing ``raw_paths``."""
-    from tt_ecog.io import sha256_file
-    from tt_ecog.reporting import write_json
-    run = config.path(drive, "eda_dir") / run_id
-    (run / "fig").mkdir(parents=True)
-    for subject in SUBJECTS:
-        for entry in config.channel_exclusions(subject):
-            (run / entry["evidence_figure"]).write_bytes(b"evidence " + entry["evidence_figure"].encode())
-    write_json(run / "run_summary.json", {"status": "COMPLETE", "test_accessed": False, "git_commit": "eda"})
-    write_json(run / "data_manifest.json", {s: {"ecog": {"sha256": sha256_file(p)}} for s, p in raw_paths.items()})
-    write_json(run / "effective_config.json", config.data)
-    write_json(run / "artifact_manifest.json", {"sha256": {
-        p.relative_to(run).as_posix(): sha256_file(p) for p in sorted(run.rglob("*")) if p.is_file()}})
-    return run
-
-
 @pytest.fixture(scope="session")
 def prepared(tmp_path_factory):
-    """Step 2 over three synthetic 60 s subjects (blocks of 12 s) with a synthetic EDA reference."""
+    """Notebook 02 over three synthetic 60 s subjects, without EDA artifacts."""
     from tt_ecog.io import sha256_file
-    from tt_ecog.prep import run_prep
     base = tmp_path_factory.mktemp("prep")
     config_path = project(base)
     config = load_config(config_path)
@@ -159,11 +140,30 @@ def prepared(tmp_path_factory):
     config.path(drive, "raw_dir").mkdir(parents=True)
     raw = {s: write_subject(drive, config, s, n=60000) for s in SUBJECTS}
     originals = {s: sha256_file(p) for s, p in raw.items()}
-    write_eda_evidence(config, drive, raw)
-    output = run_prep(config_path, drive)
+    namespace = execute_notebook(ROOT / "notebooks/02_preprocesamiento_ecog.ipynb", config_path, drive)
+    output = namespace["ctx"].output
     summary = json.loads((output / "run_summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "COMPLETE", (output / "errors/preparation.txt").read_text(encoding="utf8")
+    data = yaml.safe_load(config_path.read_text(encoding="utf8"))
+    data["paths"]["processed_pipeline_id"] = summary["pipeline_id"]
+    config_path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf8")
+    config = load_config(config_path)
     storage = config.storage_root(drive)
     return {"config": config, "config_path": config_path, "drive": drive, "raw": raw, "originals": originals,
             "output": output, "summary": summary, "base": base,
             "pipeline": storage / summary["pipeline_dir"] if summary["pipeline_dir"] else None,
             "folds": storage / summary["fold_set_dir"] if summary["fold_set_dir"] else None}
+
+
+def execute_notebook(path, config_path, drive, before_cell=None):
+    """Execute the actual portable notebook cells; Colab setup stays environment-specific."""
+    import nbformat
+    namespace = {"CONFIG": config_path, "DRIVE_ROOT": drive, "display": lambda *args: None}
+    notebook = nbformat.read(path, as_version=4)
+    for i, cell in enumerate(notebook.cells):
+        if cell.cell_type != "code" or "analysis" not in cell.metadata.get("tags", []):
+            continue
+        if before_cell:
+            before_cell(namespace, cell.source)
+        exec(compile(cell.source, f"{path.name}:cell_{i}", "exec"), namespace)
+    return namespace

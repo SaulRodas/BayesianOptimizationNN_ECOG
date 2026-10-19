@@ -25,21 +25,18 @@ import numpy as np
 from .. import preprocessing as pp
 from ..config import VERIFICATION_IDS, ConfigError, load_config
 from ..datasets import FoldData, load_fold
-from ..eda.context import Artifact, RunContext
-from ..io import MissingDevelopmentData, StorageUnavailable, read_development_glove, read_ecog, sha256_file
-from ..prep.blocks import pipeline_hash, pipeline_identity
-from ..prep.folds import fold_hash, fold_identity
-from ..prep.gate import PrepBlocked, validate_reference_run
+from ..reporting import Artifact, RunContext
+from ..io import MissingDevelopmentData, StorageUnavailable, read_development, sha256_file, verify_pipeline
 from ..reporting import environment, json_safe, utc_now, write_json
 from ..splits import Block
-from ..store import (FOLDS_MANIFEST, PROCESSED_MANIFEST, StoreError, block_dir, fold_dir, fold_set_name, read_json,
+from ..io import (FOLDS_MANIFEST, PROCESSED_MANIFEST, StoreError, block_dir, fold_dir, read_json,
                      verify_manifest)
 
 REPOSITORY = Path(__file__).resolve().parents[3]
 
 
 class VerificationBlocked(RuntimeError):
-    """A precondition is missing (data, EDA reference, processed data for this code)."""
+    """A precondition is missing (data and selected processed pipeline for this code)."""
 
 
 class BlockedCheck(RuntimeError):
@@ -62,7 +59,6 @@ class VerificationContext(RunContext):
         super().__init__(*args)
         self.records: dict[str, tuple] = {}
         self.raw_sha256: dict[str, str] = {}
-        self.reference: dict | None = None
         self.pipeline_dir: Path | None = None
         self.fold_set_dir: Path | None = None
         self.purge: int | None = None
@@ -76,7 +72,7 @@ class VerificationContext(RunContext):
     # ------------------------------------------------------------- shared accessors
     def require_data(self) -> None:
         if self.pipeline_dir is None or self.fold_set_dir is None or not self.records:
-            raise BlockedCheck("Preparation incomplete: run prepare(ctx) first (data, EDA reference, processed data)")
+            raise BlockedCheck("Preparation incomplete: run prepare(ctx) first (data and selected processed pipeline)")
 
     @property
     def subjects(self) -> list[str]:
@@ -142,7 +138,7 @@ def check(vid: str, title: str):
 def show_check(result: CheckResult) -> None:
     """Notebook display: status, details and the same files saved to Drive."""
     from IPython.display import Markdown, display
-    from ..eda.notebook import show
+    from ..reporting import show
     display(Markdown(f"**{result.vid} · {result.title}: {result.status}** — {result.details}"))
     show(result.artifacts)
 
@@ -166,50 +162,46 @@ def start_run(config_path: str | Path, drive_root: str | Path) -> VerificationCo
 
 
 def prepare(ctx: VerificationContext) -> dict[str, Any]:
-    """Load development data and locate the processed data produced by THIS code and config."""
+    """Load the explicitly selected pipeline; never derive its identity from this notebook or environment."""
     config, drive = ctx.config, ctx.drive_root
+    selected = config.data["paths"].get("processed_pipeline_id")
+    if selected is None:
+        raise VerificationBlocked("Select paths.processed_pipeline_id from notebook 02")
     for subject in ctx.subjects:
         try:
-            ecog = read_ecog(config, drive, subject)
-            glove = read_development_glove(config, drive, ecog)
+            ecog, glove = read_development(config, drive, subject)
         except MissingDevelopmentData as exc:
             raise VerificationBlocked(str(exc)) from exc
         ctx.records[subject] = (ecog, glove)
         ctx.raw_sha256[subject] = ecog.metadata["sha256"]
-    try:
-        ctx.reference = validate_reference_run(config, drive, ctx.raw_sha256)
-    except PrepBlocked as exc:
-        raise VerificationBlocked(str(exc)) from exc
-    identity = pipeline_identity(config, ctx.raw_sha256, ctx.reference["run_id"])
-    pipeline_dir = config.path(drive, "processed_dir") / pipeline_hash(identity)
+    pipeline_dir = config.path(drive, "processed_dir") / selected
     if not pipeline_dir.is_dir():
-        raise VerificationBlocked(f"No processed data for the current code and configuration ({pipeline_dir.name}): "
-                                  "run notebook 02 with this commit first")
-    purge, status = config.purge_for_build()
-    fold_set = pipeline_dir / "folds" / fold_set_name(purge, fold_hash(fold_identity(config, pipeline_dir.name,
-                                                                                      purge, status)))
-    if not fold_set.is_dir():
-        raise VerificationBlocked(f"No fold set {fold_set.name} for purge {purge} ({status}): run notebook 02 first")
+        raise VerificationBlocked("Selected pipeline is absent; run notebook 02")
     try:
-        verify_manifest(pipeline_dir, PROCESSED_MANIFEST)
-        verify_manifest(fold_set, FOLDS_MANIFEST)
-    except StoreError as exc:
-        raise VerificationBlocked(f"Processed data failed their manifests: {exc}") from exc
-    ctx.pipeline_dir, ctx.fold_set_dir, ctx.purge, ctx.purge_status = pipeline_dir, fold_set, purge, status
+        manifest = verify_pipeline(pipeline_dir, config, ctx.raw_sha256)
+    except (StoreError, OSError, ValueError, KeyError) as exc:
+        raise VerificationBlocked(f"Selected pipeline failed verification: {exc}") from exc
+    fold_set = pipeline_dir / "folds"
+    ctx.pipeline_dir, ctx.fold_set_dir = pipeline_dir, fold_set
+    ctx.purge, ctx.purge_status = config.purge_for_build()
     ctx.manifest_sha256 = {"processed_manifest": sha256_file(pipeline_dir / PROCESSED_MANIFEST),
                            "folds_manifest": sha256_file(fold_set / FOLDS_MANIFEST)}
     storage = config.storage_root(drive)
     summary = {"subjects": {s: {"sha256": d} for s, d in ctx.raw_sha256.items()},
-               "eda_reference_run": ctx.reference["run_id"],
+               "pipeline_id": manifest["pipeline_id"],
                "pipeline_dir": pipeline_dir.relative_to(storage).as_posix(),
-               "fold_set_dir": fold_set.relative_to(storage).as_posix(), "purge_samples": purge,
-               "purge_status": status, "manifests_sha256": ctx.manifest_sha256, "manifests_verified": True}
+               "fold_set_dir": fold_set.relative_to(storage).as_posix(), "purge_samples": ctx.purge,
+               "purge_status": ctx.purge_status, "manifests_sha256": ctx.manifest_sha256, "manifests_verified": True}
     write_json(ctx.output / "preparation.json", summary)
     return summary
 
 
 def run_pytest(ctx: VerificationContext, targets: tuple[str, ...] = ()) -> dict[str, Any]:
     """Run the synthetic suite in a subprocess; outcomes per V-id via the conftest recorder."""
+    if not targets:
+        # Optional later-stage tests have no V01-V14 markers and require Optuna.
+        # Verification must remain runnable before installing the search extra.
+        targets = ("tests", "--ignore=tests/test_optimization.py", "--ignore=tests/test_final_evaluation.py")
     tests = REPOSITORY / "tests"
     if not tests.is_dir():
         ctx.pytest = {"status": "NOT_AVAILABLE", "details": f"{tests} not found", "by_check": {}}
@@ -242,7 +234,7 @@ def run_pytest(ctx: VerificationContext, targets: tuple[str, ...] = ()) -> dict[
 def combine(vid: str, real: CheckResult | None, pytest: dict | None) -> dict[str, Any]:
     tests = (pytest or {}).get("by_check", {}).get(vid)
     synthetic = "NOT_RUN" if tests is None else (
-        "FAIL" if tests["failed"] else "INCOMPLETE" if tests["skipped"] or tests["not_run"] else "PASS")
+        "FAIL" if tests["failed"] else "INCOMPLETE" if tests["skipped"] or tests["not_run"] or not tests["passed"] else "PASS")
     if real is None:
         status = "BLOCKED"
     elif real.status == "FAIL" or synthetic == "FAIL":
@@ -263,11 +255,11 @@ def finish_run(ctx: VerificationContext) -> dict[str, Any]:
     pytest_status = (ctx.pytest or {}).get("status", "NOT_RUN")
     all_pass = all(t["status"] == "PASS" for t in tests.values()) and pytest_status == "PASS"
     storage = ctx.config.storage_root(ctx.drive_root)
-    report = {"schema_version": 1, "run_id": ctx.run_id, "pipeline_git_commit": ctx.env["git_commit"],
+    report = {"schema_version": 2, "run_id": ctx.run_id, "pipeline_git_commit": ctx.env["git_commit"],
               "git_dirty": ctx.env["git_dirty"], "config_sha256": ctx.config.sha256,
               "source_sha256": ctx.env["source_sha256"], "data_sha256_by_subject": ctx.raw_sha256,
               "execution_timestamp_utc": utc_now(),
-              "eda_reference_run": ctx.reference["run_id"] if ctx.reference else None,
+              "pipeline_id": ctx.pipeline_dir.name if ctx.pipeline_dir else None,
               "pipeline_dir": ctx.pipeline_dir.relative_to(storage).as_posix() if ctx.pipeline_dir else None,
               "fold_set_dir": ctx.fold_set_dir.relative_to(storage).as_posix() if ctx.fold_set_dir else None,
               "manifests_sha256": ctx.manifest_sha256, "purge_samples": ctx.purge, "purge_status": ctx.purge_status,
@@ -292,10 +284,17 @@ def finish_run(ctx: VerificationContext) -> dict[str, Any]:
             "status": "all_pass_pending_user_approval", "verification_run": ctx.run_id,
             "git_commit": ctx.env["git_commit"], "source_sha256": ctx.env["source_sha256"],
             "config_sha256": ctx.config.sha256, "data_sha256_by_subject": ctx.raw_sha256,
-            "eda_reference_run": report["eda_reference_run"], "pipeline_dir": report["pipeline_dir"],
+            "pipeline_id": report["pipeline_id"], "pipeline_dir": report["pipeline_dir"],
             "fold_set_dir": report["fold_set_dir"], "manifests_sha256": ctx.manifest_sha256,
-            "purge_samples": ctx.purge, "versions": ctx.env["versions"]}))
-    summary = {"schema_version": 1, "run_id": ctx.run_id, "status": "ALL_PASS" if all_pass else "NOT_APPROVED",
+            "purge_samples": ctx.purge, "versions": ctx.env["versions"],
+            "methodological_components": {
+                "model": ctx.config.data["model"], "loss": ctx.config.data["training"]["loss"],
+                "metrics": ctx.config.data["metrics"], "validation": ctx.config.data["validation"],
+                "verification": ctx.config.data["verification"]},
+            "component_source_sha256": {name: digest for name, digest in ctx.env["source_files"].items()
+                                         if name.startswith("src/tt_ecog/")}}))
+    summary = {"schema_version": 2, "run_id": ctx.run_id, "status": "ALL_PASS" if all_pass else "NOT_APPROVED",
+               "pipeline_id": report["pipeline_id"],
                "tests": {vid: t["status"] for vid, t in tests.items()}, "pytest": pytest_status,
                "test_accessed": False, "completed_at_utc": utc_now()}
     write_json(ctx.output / "run_summary.json", summary)

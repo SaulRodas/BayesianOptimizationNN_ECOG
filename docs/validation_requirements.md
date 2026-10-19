@@ -4,10 +4,13 @@
 
 **Regla de aprobación:** V01-V14 deben reportar `PASS` con evidencia real. `SKIP`, `XFAIL` por ausencia de datos, `BLOCKED`, errores de configuración o un archivo vacio de pruebas **NO equivalen a PASS**. La aprobación requiere ejecución real sobre datos sintéticos y, donde se indica, sobre los tres sujetos del desarrollo. Ninguna prueba necesita abrir etiquetas de test.
 
+Las pruebas de estudios Optuna pertenecen a 05/06 y se ejecutan por separado del 03; no tienen
+marcas V01–V14. El 03 conserva todas las pruebas científicas y no depende de instalar Optuna.
+
 ## 1. Preconditions y ambiente
 
 - `docs/dataset_spec.md` define forma, tiempos, índices y política de particion.
-- `channels.excluded` de `configs/experiment_config.yaml` debe validar (índices cero-basados, razón y figura de evidencia) y debe existir una corrida de EDA `COMPLETE` (`results/eda/<run_id>/`) que contenga esas figuras. No hay archivo de aprobación de QC (eliminado en el protocolo v1.1).
+- `channels.excluded` debe validar índices y razones. La evidencia histórica es documental: no se requiere una corrida EDA ni figuras en Drive. `paths.processed_pipeline_id` selecciona explícitamente una salida completa del 02, esquema 2; se verifican contrato y hashes antes de usarla.
 - `configs/experiment_config.yaml` debe validar estructura y tipos. `purge_samples` se determina durante estas pruebas; no utilizar valor provisional silencioso.
 - Las señales sintéticas deben contener un marcador temporal inequivoco para detectar desplazamientos y referencias incorrectas.
 - Registrar versions de Python, PyTorch, MNE, SciPy, scikit-learn y archivos de entrada mediante SHA-256.
@@ -107,12 +110,12 @@ Para segmento valido sin huecos, de T>=L:
 n_windows = 1 + (T - L) // stride
 ```
 
-Con T<L devuelve cero. Para inferencia se debe incluir ademas una ventana anclada al final cuando el stride ordinario no cubre el ultimo instante. Una ventana no puede cruzar huecos de QC ni bordes entre segmentos temporales disjuntos.
+Con T<L devuelve cero. Para inferencia se debe incluir ademas una ventana anclada al final cuando el stride ordinario no cubre el ultimo instante. Una ventana no puede cruzar intervalos inválidos ni bordes entre segmentos temporales disjuntos.
 
 ### V11 — Sanidad de datos
 
 - Comprobar para todos los sujetos y folds: formas, dtypes, canales, `isfinite`, memoria, mínimo/máximo y densidad de valores extremos.
-- Rechazar matrices transformadas con divergencia de ordenes de magnitud no explicada por las decisiones de QC; no modificar etiquetas para corregir métricas.
+- Rechazar matrices transformadas con divergencia de ordenes de magnitud no explicada por el procesamiento especificado; no modificar etiquetas para corregir métricas.
 - Serializar/deserializar arrays, escaladores y manifiestos; comprobar hashes y consistencia.
 
 ### V12 — Reconstrucción temporal
@@ -136,7 +139,7 @@ Con T<L devuelve cero. Para inferencia se debe incluir ademas una ventana anclad
 - CCC contra cálculo manual y sensibilidad a escala/desplazamiento de medias; RMSE/MSE en unidades correctas.
 - Evaluación indefinida por varianza cero o NaN debe invalidar la puntuacion y registrarse; no reemplazar `nanmean` silenciosamente.
 - Comprobar precisión del valor de loss (coseno en eje tiempo por dedo) y su gradiente finito.
-- Generar manifiesto con versión de código, configuración, entradas, seeds, folds y hash de escaladores.
+- Generar manifiesto con el mismo `pipeline_id` del 02, versión de código, configuración, entradas, seeds, folds y hash de escaladores. Aprobar sin modificar la purga efectiva no cambia la identidad ni reescribe arrays.
 
 ## 4. Requisitos de entrega y formato de reporte
 
@@ -156,7 +159,8 @@ Formato mínimo de `verification_report.json`:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "pipeline_id": null,
   "pipeline_git_commit": null,
   "config_sha256": null,
   "data_sha256_by_subject": {},
@@ -192,3 +196,20 @@ Formato mínimo de `verification_report.json`:
 ## 6. Restricciones de alcance
 
 Estos tests no deciden cual LR, batch size o duración maximiza Pearson, ni demuestran ausencia de sobreajuste. Tampoco constituyen una comparación BatchNorm vs LayerNorm ni decoder vs transposed convolution. Su función es garantizar que los experimentos de entrenamiento posteriores sean metodologicamente coherentes.
+
+## Regresiones de la reorganización v1.2
+
+- Ejecutar 02 y 03 sin carpeta EDA ni figuras; su ausencia no es BLOCKED.
+- Ejecutar las celdas portables de los notebooks con datos sintéticos y comparar con las funciones compartidas.
+- Cambios de presentación, rutas, fechas, épocas o aprobación no modifican `pipeline_id`; cambios del contrato efectivo o arrays sí.
+- Rechazar selección ausente, formato histórico, identidad inválida, artefactos corruptos o contrato incompatible. No seleccionar automáticamente otra corrida.
+- No publicar preparaciones incompletas ni sobrescribir corridas anteriores.
+
+## Regresiones de evaluación final (07)
+
+Pruebas sintéticas separadas de V01–V14: bloqueo de parámetros finales pendientes, selección
+de época exclusivamente en desarrollo, recuperación de checkpoints, ventanas dentro de cada
+bloque en el refit, congelación completa antes de abrir test, rechazo de corrupción/cambios,
+adaptadores MATLAB allowlist, transformación sin reajuste de escaladores y cobertura idéntica
+A/B/C. Ejecutar las celdas portables de 07 en CPU con datos sintéticos y comprobar sus entregables.
+Estas pruebas no autorizan evaluación real ni cuentan como evidencia V01–V14 del dataset.

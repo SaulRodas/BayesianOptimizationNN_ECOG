@@ -6,13 +6,11 @@ import pandas as pd
 from ... import preprocessing as pp
 from ...descriptive import welch_psd
 from .. import comparators
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 from ._common import empty_panel
 
 
-@section("s08_glove", "Guante de datos", "Recuperar las muestras de 25 Hz e interpolar con spline cúbico a 100 Hz")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     # 08a — storage pattern; saved BEFORE recovery so a failed contract still leaves evidence.
     rows = []
     fig, axes = pl.figure(2, len(subjects), width=4.6, height=3.0)
@@ -58,7 +56,7 @@ def run(ctx, subjects):
         t1k = np.arange(rows_1k.start, rows_1k.stop) / b.glove_record.metadata["sampling_hz_glove_storage"]
         in25 = (t25 >= lo) & (t25 <= hi)
         in100 = (b.t100 >= lo) & (b.t100 <= hi)
-        lin = comparators.linear(t25, y25, b.t100[in100])
+        lin = b.linear_glove[:, in100]
         for finger in range(5):
             ax = axes[finger, col]
             if b.glove_record.metadata["sampling_hz_glove_storage"] != b.glove_record.metadata["sampling_hz_glove_effective"]:
@@ -96,14 +94,7 @@ def run(ctx, subjects):
     fig, axes = pl.figure(1, len(subjects), width=4.6, height=3.2, sharey=True)
     for ax, (subject, b) in zip(axes[0], subjects.items()):
         y25, t25 = b.glove25
-        t_known, y_known = t25[::2], y25[:, ::2]
-        target = (t25 > t_known[0]) & (t25 < t_known[-1])
-        target[::2] = False
-        scale = np.maximum(y25.std(axis=1), 1e-12)
-        cubic, _ = pp.interpolate_glove(t_known, y_known, t25[target])
-        estimates = {"Retención (ZOH)": comparators.zero_order_hold(t_known, y_known, t25[target]),
-                     "Lineal": comparators.linear(t_known, y_known, t25[target]),
-                     "Cúbico (pipeline)": cubic}
+        target, scale, estimates = b.interpolation_holdout
         width = 0.25
         for k, (name, estimate) in enumerate(estimates.items()):
             rmse = np.sqrt(np.mean((estimate - y25[:, target]) ** 2, axis=1)) / scale
@@ -119,3 +110,26 @@ def run(ctx, subjects):
     axes[0, 0].legend(loc="upper left")
     ctx.save_table(pd.DataFrame(rows), "s08_interpolation_holdout", "Error de interpolación al ocultar muestras alternas de 25 Hz")
     ctx.save_fig(fig, "s08_interpolation_holdout", "Validación por muestras ocultas: el spline cúbico reconstruye mejor que lineal y retención")
+
+
+SECTION_NAME = 's08_glove'
+TITLE = 'Guante de datos'
+JUSTIFIES = 'Recuperar las muestras de 25 Hz e interpolar con spline cúbico a 100 Hz'
+
+
+def interpolation_holdout(y25, t25):
+    t_known, y_known = t25[::2], y25[:, ::2]
+    target = (t25 > t_known[0]) & (t25 < t_known[-1])
+    target[::2] = False
+    scale = np.maximum(y25.std(axis=1), 1e-12)
+    cubic, _ = pp.interpolate_glove(t_known, y_known, t25[target])
+    estimates = {"Retención (ZOH)": comparators.zero_order_hold(t_known, y_known, t25[target]),
+                 "Lineal": comparators.linear(t_known, y_known, t25[target]),
+                 "Cúbico (pipeline)": cubic}
+    return target, scale, estimates
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    b.linear_glove = comparators.linear(b.glove25[1], b.glove25[0], b.t100)
+    b.interpolation_holdout = interpolation_holdout(*b.glove25)

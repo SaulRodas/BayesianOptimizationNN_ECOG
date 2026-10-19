@@ -5,14 +5,12 @@ import pandas as pd
 from scipy.signal import spectrogram
 
 from ...descriptive import welch_psd
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 
 STAGES = [("Cruda (conservados)", pl.MUTED), ("Tras CMR", pl.SLOTS[1]), ("Tras CMR + FIR", pl.KEPT)]
 
 
-@section("s05_notch", "Rechazo de línea", "Notch FIR en 60/120/180 Hz, su ancho y su estacionariedad")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     lines = ctx.config.data["signal"]["notch_hz"]
     zoom_lines = list(lines) + [240.0]
     zoom_s = ctx.eda["line_zoom_psd_window_seconds"]
@@ -20,8 +18,7 @@ def run(ctx, subjects):
     # 05a — high-resolution spectra around each line frequency.
     fig, axes = pl.figure(len(zoom_lines), len(subjects), width=4.2, height=2.3)
     for col, (subject, b) in enumerate(subjects.items()):
-        spectra = [welch_psd(data, b.fs, zoom_s, ctx.eda["psd_overlap_fraction"])
-                   for data in (b.kept, b.cmr, b.filtered)]
+        spectra = b.line_spectra
         for row, line in enumerate(zoom_lines):
             ax = axes[row, col]
             for (label, color), (freq, psd) in zip(STAGES, spectra):
@@ -39,9 +36,7 @@ def run(ctx, subjects):
     # 05b — stationarity of line noise over the record.
     fig, axes = pl.figure(1, len(subjects), width=4.6, height=3.4)
     for ax, (subject, b) in zip(axes[0], subjects.items()):
-        nper = int(round(ctx.eda["psd_window_seconds"] * b.fs))
-        freq, times, sxx = spectrogram(b.kept, fs=b.fs, window="hann", nperseg=nper, noverlap=nper // 2,
-                                       detrend="constant", axis=-1)
+        freq, times, sxx = b.line_spectrogram
         mask = (freq >= 50) & (freq <= 70)
         log_power = np.median(10 * np.log10(np.maximum(sxx[:, mask], 1e-300)), axis=0)
         image = ax.pcolormesh(times, freq[mask], log_power, cmap=pl.SEQUENTIAL, shading="nearest")
@@ -82,3 +77,18 @@ def run(ctx, subjects):
     axes[0, 0].set_ylabel("Ganancia (dB)")
     axes[0, 0].legend(loc="lower left")
     ctx.save_fig(fig, "s05_notch_response", "Respuesta del notch (rechazo ±1 Hz, transición 2 Hz) y del kernel combinado; 240 Hz queda fuera por el pasabanda")
+
+
+SECTION_NAME = 's05_notch'
+TITLE = 'Rechazo de línea'
+JUSTIFIES = 'Notch FIR en 60/120/180 Hz, su ancho y su estacionariedad'
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    eda = config.data['eda']
+    b.line_spectra = [welch_psd(data, b.fs, eda['line_zoom_psd_window_seconds'], eda['psd_overlap_fraction'])
+                      for data in (b.kept, b.cmr, b.filtered)]
+    nper = int(round(eda['psd_window_seconds'] * b.fs))
+    b.line_spectrogram = spectrogram(b.kept, fs=b.fs, window='hann', nperseg=nper,
+                                     noverlap=nper // 2, detrend='constant', axis=-1)

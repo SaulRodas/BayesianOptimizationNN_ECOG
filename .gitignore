@@ -9,6 +9,8 @@
 !/data/raw/.gitkeep
 !/data/processed/.gitkeep
 !/data/manifests/.gitkeep
+AGENTS.md
+/docs/CODEX_START.md
 
 # Pesos, modelos, estudios y material privado
 *.mat

@@ -5,24 +5,21 @@ import pandas as pd
 
 from ... import preprocessing as pp
 from .. import comparators
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 from ._common import empty_panel
 
 VARIANTS = [("CAR (todos)", pl.SLOTS[1]), ("CMR (todos)", pl.SLOTS[2]),
             ("CAR (conservados)", pl.SLOTS[3]), ("CMR (conservados)", pl.SLOTS[0])]
 
 
-def _references(b, window: slice) -> list[np.ndarray]:
+def reference_signals(b, window: slice) -> list[np.ndarray]:
     raw = b.raw[:, window].astype(np.float64)
     kept = b.kept[:, window]
     return [comparators.common_average(raw), pp.common_median(raw),
             comparators.common_average(kept), pp.common_median(kept)]
 
 
-@section("s03_reference", "Referencia común",
-         "Mediana común instantánea (CMR) de los canales conservados; excluir antes de referenciar")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     context_s = ctx.eda["episode_context_seconds"]
     window_s = ctx.eda["window_seconds"]
     cases = [(subject, b, channel) for subject, b in subjects.items() for channel in b.cmap.excluded]
@@ -34,7 +31,7 @@ def run(ctx, subjects):
             center = (int(np.argmax(b.std_ratio[channel])) + 0.5) * window_s
             window = b.excerpt(2 * context_s + window_s, center)
             t = np.arange(window.start, window.stop) / b.fs
-            refs = _references(b, window)
+            refs = [ref[window] for ref in b.reference_signals]
             for col, skip_first in enumerate((False, True)):
                 ax = axes[row, col]
                 for k, ((label, color), ref) in enumerate(zip(VARIANTS, refs)):
@@ -54,7 +51,7 @@ def run(ctx, subjects):
     rows = []
     for subject, b in subjects.items():
         typical = float(np.median(b.channel_summary.loc[~b.channel_summary["excluded"], "typical_local_std"]))
-        refs = _references(b, slice(0, b.n_samples))
+        refs = b.reference_signals
         for (label, _), ref in zip(VARIANTS, refs):
             rows.append({"subject": subject, "reference": label,
                          "p999_abs_over_typical_std": float(np.percentile(np.abs(ref - np.median(ref)), 99.9)) / typical,
@@ -107,14 +104,12 @@ def run(ctx, subjects):
     fig, axes = pl.figure(2, len(subjects), width=4.0, height=3.6)
     for col, (subject, b) in enumerate(subjects.items()):
         window = b.excerpt(seconds)
-        before = pp.apply_fir(b.kept[:, window], b.spec.fir)
-        interior = pp.valid_slice(before.shape[1], b.spec.fir.half_support)
-        if interior.stop - interior.start < 2:
-            empty_panel(axes[0, col], "Extracto demasiado corto")
-            empty_panel(axes[1, col], "Extracto demasiado corto")
+        before, after = b.reference_correlation_inputs
+        if before.shape[1] < 2:
+            empty_panel(axes[0, col], "Extract too short")
+            empty_panel(axes[1, col], "Extract too short")
             continue
-        after = b.filtered[:, window]
-        for row, (data, label) in enumerate(((before[:, interior], "antes de CMR"), (after[:, interior], "después de CMR"))):
+        for row, (data, label) in enumerate(((before, "antes de CMR"), (after, "después de CMR"))):
             corr = np.corrcoef(data)
             off = np.abs(corr[~np.eye(corr.shape[0], dtype=bool)])
             ax = axes[row, col]
@@ -124,3 +119,17 @@ def run(ctx, subjects):
                    ylabel="Canal efectivo")
     fig.colorbar(image, ax=axes[:, -1], label="r de Pearson (40–200 Hz)")
     ctx.save_fig(fig, "s03_channel_correlation", "Correlación entre canales en 40–200 Hz: la CMR reduce la correlación compartida")
+
+
+SECTION_NAME = 's03_reference'
+TITLE = 'Referencia común'
+JUSTIFIES = 'Mediana común instantánea (CMR) de los canales conservados; excluir antes de referenciar'
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    b.reference_signals = reference_signals(b, slice(0, b.n_samples))
+    window = b.excerpt(config.data['eda']['correlation_excerpt_seconds'])
+    before = pp.apply_fir(b.kept[:, window], b.spec.fir)
+    interior = pp.valid_slice(before.shape[1], b.spec.fir.half_support)
+    b.reference_correlation_inputs = (before[:, interior], b.filtered[:, window][:, interior])

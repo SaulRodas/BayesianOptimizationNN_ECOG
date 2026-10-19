@@ -8,11 +8,11 @@ import traceback
 from uuid import uuid4
 
 from ..config import ConfigError, load_config
-from ..io import (MissingDevelopmentData, StorageUnavailable, read_development_glove, read_ecog,
+from ..io import (MissingDevelopmentData, StorageUnavailable, read_development,
                   sha256_file)
 from ..reporting import environment, utc_now, write_json
-from .bundle import SubjectBundle
-from .context import RunContext
+from .bundle import SubjectBundle, calculate_overview, calculate_reference, calculate_features_and_glove
+from ..reporting import RunContext
 from .sections import SECTIONS
 
 
@@ -52,8 +52,7 @@ def load_subjects(ctx: RunContext) -> dict[str, SubjectBundle]:
     bundles = {}
     for subject in ctx.config.data["project"]["subjects"]:
         try:
-            ecog = read_ecog(ctx.config, ctx.drive_root, subject)
-            glove = read_development_glove(ctx.config, ctx.drive_root, ecog)
+            ecog, glove = read_development(ctx.config, ctx.drive_root, subject)
             bundle = SubjectBundle(ctx.config, ecog, glove)
         except MissingDevelopmentData as exc:
             ctx.subject_status[subject] = {"status": "BLOCKED", "details": str(exc)}
@@ -83,7 +82,7 @@ def _status(ctx: RunContext) -> str:
         return "FAIL"
     if "BLOCKED" in subjects or not subjects:
         return "BLOCKED"
-    expected = [section.section_name for section in SECTIONS]
+    expected = [section.SECTION_NAME for section in SECTIONS]
     if any(ctx.sections.get(name) is None or ctx.sections[name].status != "COMPLETE" for name in expected):
         return "FAIL"
     return "COMPLETE"
@@ -104,7 +103,7 @@ def finish_run(ctx: RunContext, raise_on_failure: bool = True) -> dict:
                        "artifacts": [a.relative for a in record.artifacts]}
                 for name, record in ctx.sections.items()}
     for section in SECTIONS:
-        sections.setdefault(section.section_name, {"title": section.title, "justifies": section.justifies,
+        sections.setdefault(section.SECTION_NAME, {"title": section.TITLE, "justifies": section.JUSTIFIES,
                                                    "status": "NOT_RUN", "artifacts": []})
     summary = {"schema_version": 2, "run_id": ctx.run_id, "status": status,
                "subjects": ctx.subject_status, "sections": sections,
@@ -141,10 +140,23 @@ def run_eda(config_path: str | Path, drive_root: str | Path) -> Path:
     except (EdaBlocked, EdaFailed):
         return ctx.output
     for section in SECTIONS:
+        ctx.begin_section(section.SECTION_NAME, section.TITLE, section.JUSTIFIES)
         try:
-            section(ctx, subjects)
+            if section.SECTION_NAME == "s01_overview":
+                calculate_overview(subjects)
+            if section.SECTION_NAME == "s03_reference":
+                calculate_reference(subjects)
+            if section.SECTION_NAME == "s04_band":
+                calculate_features_and_glove(subjects)
+            if hasattr(section, "prepare_subject"):
+                for b in subjects.values():
+                    section.prepare_subject(b, ctx.config)
+            ctx.execute(section.SECTION_NAME, section.TITLE, section.JUSTIFIES, section.draw, subjects)
         except Exception:
-            continue  # recorded as FAIL with traceback in errors/
+            record = ctx.sections[section.SECTION_NAME]
+            record.status, record.error = "FAIL", traceback.format_exc()
+            (ctx.output / "errors" / f"{section.SECTION_NAME}.txt").write_text(record.error, encoding="utf8")
+            continue  # computation and plotting failures remain visible in this EDA report
     finish_run(ctx, raise_on_failure=False)
     return ctx.output
 

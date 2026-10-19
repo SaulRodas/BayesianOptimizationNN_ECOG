@@ -1,4 +1,4 @@
-"""Step 2 on three synthetic 60 s subjects (blocks of 12 s) with a synthetic EDA reference."""
+"""Step 2 on three synthetic 60 s subjects (blocks of 12 s) without any EDA artifacts."""
 
 from copy import deepcopy
 import json
@@ -19,14 +19,11 @@ from tt_ecog.io import DataContractError, DevelopmentRecord, read_development_gl
 from tt_ecog.prep import PrepBlocked, run_prep
 from tt_ecog.prep import blocks as prep_blocks
 from tt_ecog.prep import folds as prep_folds
-from tt_ecog.prep.gate import eda_run_problems, validate_reference_run
-from tt_ecog.prep.steps import STEPS
 from tt_ecog.splits import make_folds
-from tt_ecog.store import (FOLDS_MANIFEST, PROCESSED_MANIFEST, StoreError, block_dir, publish,
+from tt_ecog.io import (FOLDS_MANIFEST, PROCESSED_MANIFEST, StoreError, block_dir, publish,
                            verify_manifest)
-from conftest import EDA_RUN_ID, ROOT, SUBJECTS, project
+from conftest import ROOT, SUBJECTS, project
 
-RUN_ID = EDA_RUN_ID
 NOTEBOOK = ROOT / "notebooks/02_preprocesamiento_ecog.ipynb"
 
 
@@ -39,16 +36,15 @@ def records(prepared, subject):
 def test_run_is_complete_and_traceable(prepared):
     summary, output = prepared["summary"], prepared["output"]
     assert summary["status"] == "COMPLETE", summary
-    assert [name for name in summary["steps"]] == [s.section_name for s in STEPS]
-    assert all(step["status"] == "COMPLETE" for step in summary["steps"].values())
-    assert summary["eda_reference_run"] == RUN_ID and summary["test_accessed"] is False
+    assert summary["test_accessed"] is False
+    assert not prepared["config"].path(prepared["drive"], "eda_dir").exists()
     assert summary["purge_samples"] == 256 and summary["purge_status"] == "candidate_pending_V04_V09"
     assert summary["approved_purge"] is None
-    assert re.fullmatch(r"data/processed/[0-9a-f]{16}", summary["pipeline_dir"])
-    assert re.fullmatch(r"purge_256_[0-9a-f]{16}", prepared["folds"].name)
+    assert re.fullmatch(r"data/processed/[0-9a-f]{64}", summary["pipeline_dir"])
+    assert prepared["folds"].name == "folds"
     verify_manifest(prepared["pipeline"], PROCESSED_MANIFEST)
     folds_manifest = verify_manifest(prepared["folds"], FOLDS_MANIFEST)
-    assert folds_manifest["purge_status"] == "candidate_pending_V04_V09"
+    assert folds_manifest["pipeline_id"] == summary["pipeline_id"]
     for relative, digest in json.loads((output / "artifact_manifest.json").read_text(encoding="utf-8"))["sha256"].items():
         assert sha256_file(output / relative) == digest
     assert not list((output / "errors").iterdir())
@@ -121,7 +117,7 @@ def test_blocks_are_processed_independently(prepared, tmp_path):
 
 
 def _arrays(prepared, subject):
-    blocks, arrays = prep_folds._subject_blocks(prepared["pipeline"], subject,
+    blocks, arrays = prep_folds.subject_blocks(prepared["pipeline"], subject,
                                                 prepared["config"].data["validation"]["block_names"])
     return blocks, {n: {k: np.array(v) for k, v in a.items()} for n, a in arrays.items()}
 
@@ -193,21 +189,21 @@ def test_second_run_reuses_verified_directories(prepared):
     assert summary["status"] == "COMPLETE"
     assert summary["pipeline_dir"] == prepared["summary"]["pipeline_dir"]
     assert summary["fold_set_dir"] == prepared["summary"]["fold_set_dir"]
-    for name in ("p02_pipeline", "p03_fold_set"):
-        assert json.loads((output / f"tables/{name}.json").read_text(encoding="utf-8"))["reused"] is True
+    assert summary["reused"] is True
+
 
 
 @pytest.mark.verification("V11", "V14")
 def test_corrupt_directory_is_never_reused_or_overwritten(prepared, tmp_path):
     copy = tmp_path / prepared["pipeline"].name
-    shutil.copytree(prepared["pipeline"], copy, ignore=shutil.ignore_patterns("folds"))
+    shutil.copytree(prepared["pipeline"], copy)
     verify_manifest(copy, PROCESSED_MANIFEST)
     with open(block_dir(copy, "S1", "B1") / "y.npy", "ab") as stream:
         stream.write(b"0")
     with pytest.raises(StoreError, match="mismatch"):
         verify_manifest(copy, PROCESSED_MANIFEST)
-    partial = tmp_path / "partial"
-    shutil.copytree(prepared["pipeline"], partial, ignore=shutil.ignore_patterns("folds"))
+    partial = tmp_path / ".partial_test"
+    shutil.copytree(prepared["pipeline"], partial)
     with pytest.raises(StoreError):
         publish(partial, copy, PROCESSED_MANIFEST)
     (copy / PROCESSED_MANIFEST).unlink()
@@ -221,49 +217,13 @@ def _with(config, **channels):
     return ExperimentConfig(data, config.source, config.sha256)
 
 
-@pytest.mark.verification("V02")
-def test_gate_refusals(prepared, tmp_path):
-    config, drive = prepared["config"], prepared["drive"]
-    digests = dict(prepared["originals"])
-    assert eda_run_problems(config, drive, RUN_ID, digests) == []
-    with pytest.raises(PrepBlocked, match=RUN_ID):
-        validate_reference_run(_with(config, reference_run=None), drive, digests)
-    assert eda_run_problems(config, drive, "20260101T000000Z_000000", digests)[0].startswith("folder")
-    assert any("S2" in p for p in eda_run_problems(config, drive, RUN_ID, {**digests, "S2": "0" * 64}))
-    excluded = deepcopy(config.data["channels"]["excluded"])
-    excluded["S3"] = [{"index": 1, "reason": "x", "evidence_figure": "fig/x.png"}]
-    problems = eda_run_problems(_with(config, excluded=excluded), drive, RUN_ID, digests)
-    assert any("channels.excluded" in p for p in problems) and any("fig/x.png" in p for p in problems)
-    run = config.path(drive, "eda_dir") / RUN_ID
-    figure = run / "fig/s02_S2_c037.png"
-    original = figure.read_bytes()
-    figure.write_bytes(b"tampered")
-    try:
-        assert any("mismatch: fig/s02_S2_c037.png" in p for p in eda_run_problems(config, drive, RUN_ID, digests))
-    finally:
-        figure.write_bytes(original)
 
 
-@pytest.mark.verification("V02")
-def test_null_reference_run_blocks_before_processing(tmp_path, prepared):
-    config_path = project(tmp_path, reference_run=None)
-    drive = tmp_path / "d"
-    shutil.copytree(prepared["config"].path(prepared["drive"], "raw_dir"),
-                    load_config(config_path).path(drive, "raw_dir"))
-    output = run_prep(config_path, drive)
-    summary = json.loads((output / "run_summary.json").read_text(encoding="utf-8"))
-    assert summary["status"] == "BLOCKED" and summary["steps"]["p01_gate"]["status"] == "BLOCKED"
-    assert {summary["steps"][s]["status"] for s in ("p02_blocks", "p03_folds")} == {"NOT_RUN"}
-    assert summary["pipeline_dir"] is None
-    assert "reference_run is null" in (output / "errors/p01_gate.txt").read_text(encoding="utf-8")
-    command = subprocess.run([sys.executable, "-m", "tt_ecog.prep", "--config", str(config_path),
-                              "--drive-root", str(drive)], capture_output=True, text=True)
-    assert command.returncode == 2 and "BLOCKED" in command.stdout
 
 
 @pytest.mark.verification("V01")
 def test_step2_sources_never_name_test_variables():
-    sources = [ROOT / "src/tt_ecog" / f for f in ("datasets.py", "splits.py", "store.py")]
+    sources = [ROOT / "src/tt_ecog" / f for f in ("datasets.py", "splits.py")]
     sources += sorted((ROOT / "src/tt_ecog/prep").glob("*.py"))
     for path in sources:
         text = path.read_text(encoding="utf-8").lower()
@@ -280,8 +240,6 @@ def test_notebook_02_is_light_and_valid():
         assert "def " not in source and "class " not in source
     assert "--ff-only" in code[0] and "pull" in code[0]
     joined = "\n".join(code)
-    for step in STEPS:
-        assert step.section_name in joined
     assert "finish_run" in joined and "256" not in joined
 
 

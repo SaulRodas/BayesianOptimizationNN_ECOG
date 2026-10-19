@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from .. import plotting as pl
+from ... import plotting as pl
 
 
 def pearson_rows(x: np.ndarray, y: np.ndarray) -> np.ndarray:

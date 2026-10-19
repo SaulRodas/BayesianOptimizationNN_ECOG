@@ -6,11 +6,10 @@ import numpy as np
 import pandas as pd
 
 from ... import preprocessing as pp
-from .. import plotting as pl
-from ..context import section
+from ... import plotting as pl
 
 
-def _autocorrelation(x: np.ndarray, max_lag: int) -> np.ndarray:
+def autocorrelation(x: np.ndarray, max_lag: int) -> np.ndarray:
     """Normalised autocorrelation of each row for lags 0..max_lag (FFT based)."""
     x = x - x.mean(axis=-1, keepdims=True)
     n = x.shape[-1]
@@ -20,8 +19,7 @@ def _autocorrelation(x: np.ndarray, max_lag: int) -> np.ndarray:
     return acf / np.maximum(acf[..., :1], 1e-300)
 
 
-@section("s11_validation", "Validación por bloques", "CV temporal por bloques B1–B5 con purga; insumos para fijarla en el paso 3")
-def run(ctx, subjects):
+def draw(ctx, subjects):
     validation = ctx.config.data["validation"]
     stage1 = set(validation["stage1_validation_blocks"])
 
@@ -63,10 +61,10 @@ def run(ctx, subjects):
         max_lag = int(min(ctx.eda["autocorr_max_lag_seconds"] * fs, valid.sum() // 2))
         lags = np.arange(max_lag + 1) / fs
         y100, _ = b.glove100
-        acf_y = _autocorrelation(y100[:, valid], max_lag)
+        acf_y = b.glove_autocorrelation
         for finger, color in enumerate(pl.FINGER_COLORS):
             axes[0, col].plot(lags, acf_y[finger], color=color, lw=1.0, label=pl.FINGERS[finger])
-        acf_x = _autocorrelation(b.hg100[:, valid], max_lag)
+        acf_x = b.power_autocorrelation
         axes[1, col].fill_between(lags, np.percentile(acf_x, 10, axis=0), np.percentile(acf_x, 90, axis=0),
                                   color=pl.KEPT, alpha=0.2, lw=0, label="p10–p90 canales")
         axes[1, col].plot(lags, np.median(acf_x, axis=0), color=pl.KEPT, lw=1.1, label="Mediana canales")
@@ -81,7 +79,7 @@ def run(ctx, subjects):
 
     # 11c — measured support of the full chain vs the purge candidate.
     spec = next(iter(subjects.values())).spec
-    result = pp.measured_support(spec, ctx.eda["support_tolerance"])
+    result = next(iter(subjects.values())).measured_support
     analytic = result["analytic"]
     candidate = validation["purge_candidate_for_tests"]
     fig, axes = pl.figure(1, 1, width=9, height=3.4)
@@ -106,3 +104,17 @@ def run(ctx, subjects):
                    "status": "informational; purge_samples_at_100hz remains null until V04/V09",
                    "minimum_gap_hint_target": int(math.ceil(2 * result["measured_half_support_target"] + spec.delay_samples))},
                   "support", "Soporte analítico y medido de la cadena; insumo para fijar la purga en el paso 3")
+
+
+SECTION_NAME = 's11_validation'
+TITLE = 'Validación por bloques'
+JUSTIFIES = 'CV temporal por bloques B1–B5 con purga; insumos para fijarla en el paso 3'
+
+
+def prepare_subject(b, config):
+    """CLI adapter for the calculations shown in notebook 01."""
+    max_lag = int(min(config.data['eda']['autocorr_max_lag_seconds'] * b.spec.target_sfreq, b.valid100.sum() // 2))
+    b.glove_autocorrelation = autocorrelation(b.glove100[0][:, b.valid100], max_lag)
+    b.power_autocorrelation = autocorrelation(b.hg100[:, b.valid100], max_lag)
+    if b.subject == config.data['project']['subjects'][0]:
+        b.measured_support = pp.measured_support(b.spec, config.data['verification']['support_tolerance'])

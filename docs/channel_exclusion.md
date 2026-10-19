@@ -26,7 +26,7 @@ Canales efectivos: **S1 = 61, S2 = 46, S3 = 64**.
 
 ## Procedencia y límites
 
-- Las cifras provienen de `results/eda_qc_review/20261018T230228Z/` (revisión de los CSV del primer EDA en Colab). Esa revisión **no** verificó los hashes de los `.mat` de origen (`raw_source_hashes_verified: false`); la nueva corrida del EDA (`results/eda/<run_id>/`) regenera la evidencia con hashes verificados y la figura de cada canal.
+- Las cifras provienen de `results/eda_qc_review/20261018T230228Z/` (revisión de los CSV del primer EDA en Colab). Esa revisión **no** verificó los hashes de los `.mat` de origen (`raw_source_hashes_verified: false`). El EDA opcional (`results/eda/<run_id>/`) permite regenerar la evidencia con hashes verificados y la figura de cada canal. Desde v1.2 estas referencias son históricas: ni su carpeta ni sus figuras son requisitos de 02/03.
 - La decisión usó solo ECoG de desarrollo: sin etiquetas, predicciones ni Pearson.
 - Como la inspección observó todo el desarrollo, no debe presentarse como un criterio anidado por fold.
 - Si la nueva corrida contradijera esta evidencia, se registra en `docs/experimental_log.md` y se pide autorización antes de cambiar la lista.
