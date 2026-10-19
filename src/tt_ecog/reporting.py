@@ -20,6 +20,21 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n", encoding="utf-8")
 
 
+def json_safe(value: object) -> object:
+    """Plain JSON types: numpy values become Python values, non-finite floats None."""
+    import math
+    import numpy as np
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple, np.ndarray)):
+        return [json_safe(v) for v in (value.tolist() if isinstance(value, np.ndarray) else value)]
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    return value
+
+
 def environment(project_root: Path) -> dict:
     versions = {}
     for package in ("tt-ecog", "numpy", "scipy", "pandas", "h5py", "PyYAML", "matplotlib",

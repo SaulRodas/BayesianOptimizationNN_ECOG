@@ -5,12 +5,17 @@ from pathlib import Path
 from typing import Any
 import hashlib
 import math
+import re
 
 import yaml
 
 
 class ConfigError(ValueError):
     """Invalid or unsafe stage configuration."""
+
+
+RUN_ID = re.compile(r"^\d{8}T\d{6}Z_[0-9a-f]{6}$")
+PURGE_CANDIDATE_STATUS = "candidate_pending_V04_V09"
 
 
 def relative_path(value: Any, label: str) -> Path:
@@ -53,7 +58,7 @@ def _interval(value: Any, name: str, *, ordered: bool = True) -> None:
         raise ConfigError(f"{name}: start must be lower than end")
 
 
-RESOLVABLE_PATHS = {"raw_dir", "processed_dir", "manifests_dir", "results_dir", "eda_dir"}
+RESOLVABLE_PATHS = {"raw_dir", "processed_dir", "manifests_dir", "results_dir", "eda_dir", "preprocessing_dir"}
 
 
 @dataclass(frozen=True)
@@ -77,6 +82,20 @@ class ExperimentConfig:
     def excluded_channels(self, subject: str) -> tuple[int, ...]:
         return tuple(sorted(entry["index"] for entry in self.channel_exclusions(subject)))
 
+    def approved_purge(self) -> int:
+        purge = self.data["validation"]["purge_samples_at_100hz"]
+        if purge is None:
+            raise ConfigError("validation.purge_samples_at_100hz is pending (null); approve it after V04/V09")
+        return purge
+
+    def purge_for_build(self) -> tuple[int, str]:
+        """Purge used to build fold artifacts and its status. While the purge is null
+        this is the verification candidate, always labelled as such: never an approval."""
+        validation = self.data["validation"]
+        if validation["purge_samples_at_100hz"] is not None:
+            return validation["purge_samples_at_100hz"], "approved"
+        return validation["purge_candidate_for_tests"], PURGE_CANDIDATE_STATUS
+
 
 def _validate_channels(channels: dict, nominal: dict[str, int], subjects: list[str]) -> None:
     expected = {"index_convention": "zero_based",
@@ -85,6 +104,9 @@ def _validate_channels(channels: dict, nominal: dict[str, int], subjects: list[s
     for key, value in expected.items():
         if channels[key] != value:
             raise ConfigError(f"channels.{key}: expected {value!r}")
+    reference = channels["reference_run"]
+    if reference is not None and (not isinstance(reference, str) or not RUN_ID.match(reference)):
+        raise ConfigError("channels.reference_run: expected null or an EDA run_id such as 20261019T004831Z_3a68db")
     excluded = channels["excluded"]
     if not isinstance(excluded, dict) or list(excluded) != subjects:
         raise ConfigError("channels.excluded: expected exactly the keys S1, S2, S3 in order")
@@ -191,6 +213,43 @@ def _validate_eda(eda: dict) -> None:
     _positive_int(eda["plot_max_points"], "eda.plot_max_points")
 
 
+def _validate_validation(validation: dict) -> None:
+    if validation["design"] != "purged_blocked_cv":
+        raise ConfigError("validation.design must be purged_blocked_cv")
+    names = validation["block_names"]
+    if validation["n_base_blocks"] != 5 or names != ["B1", "B2", "B3", "B4", "B5"]:
+        raise ConfigError("validation: five chronological blocks B1-B5 are fixed")
+    if validation["stage1_validation_blocks"] != ["B2", "B4"] or validation["stage2_validation_blocks"] != names:
+        raise ConfigError("validation: stage 1 validates B2 and B4; stage 2 validates B1-B5")
+    purge = validation["purge_samples_at_100hz"]
+    if purge is not None and (type(purge) is not int or purge < 0):
+        raise ConfigError("validation.purge_samples_at_100hz: expected null (pending) or an integer >= 0")
+    candidate = validation["purge_candidate_for_tests"]
+    if type(candidate) is not int or candidate < 0:
+        raise ConfigError("validation.purge_candidate_for_tests: expected an integer >= 0")
+    for key in ("train_window_samples", "train_stride_samples", "inference_window_samples",
+                "inference_stride_samples"):
+        _positive_int(validation[key], f"validation.{key}")
+    if validation["train_window_samples"] != validation["inference_window_samples"]:
+        raise ConfigError("validation: training and inference windows must have the same length")
+    if validation["inference_stride_samples"] > validation["inference_window_samples"]:
+        raise ConfigError("validation.inference_stride_samples cannot exceed the window (coverage gaps)")
+    if validation["allow_windows_across_gaps"] is not False:
+        raise ConfigError("validation.allow_windows_across_gaps must be false")
+    if (validation["score_reconstruction"] != "overlap_add"
+            or validation["coverage_policy"] != "full_valid_timestamps_required"):
+        raise ConfigError("validation: overlap-add with full coverage of valid timestamps is fixed")
+
+
+def _validate_scaling(scaling: dict) -> None:
+    ecog, targets = scaling["ecog"], scaling["targets"]
+    if (ecog["type"] != "robust" or ecog["quantile_range_percent"] != [10, 90] or ecog["unit_variance"] is not True
+            or ecog["fit_only_on"] != "fold_train" or ecog["feature_axis"] != "channel_frequency"):
+        raise ConfigError("scaling.ecog: RobustScaler(10, 90, unit_variance) per channel-frequency on fold train is fixed")
+    if targets["type"] != "minmax" or targets["feature_range"] != [0, 1] or targets["fit_only_on"] != "fold_train":
+        raise ConfigError("scaling.targets: MinMaxScaler [0, 1] on fold train is fixed")
+
+
 def load_config(path: str | Path) -> ExperimentConfig:
     path = Path(path).resolve()
     payload = path.read_bytes()
@@ -224,6 +283,8 @@ def load_config(path: str | Path) -> ExperimentConfig:
         _validate_channels(data["channels"], raw["expected_channels_nominal"], subjects)
         _validate_signal(data["signal"], raw)
         _validate_eda(data["eda"])
+        _validate_validation(data["validation"])
+        _validate_scaling(data["scaling"])
     except (KeyError, TypeError) as exc:
         raise ConfigError(f"Missing or malformed configuration: {exc}") from exc
     return ExperimentConfig(data, path, hashlib.sha256(payload).hexdigest())

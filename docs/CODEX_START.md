@@ -12,7 +12,9 @@ Implementa el proyecto descrito por los documentos de este repositorio. Antes de
 - La etapa de QC con umbrales y `qc_decisions.json` fue **eliminada** (decisión de la persona usuaria, 2026-10-18). La exclusión de canales es una lista fija en el YAML (`channels.excluded`: S1-54, S2-20, S2-37) con evidencia ECoG. La regla "no codificar decisiones por canal/sujeto en el código" se cumple manteniéndolas solo en el YAML.
 - Pendiente de la persona usuaria: ejecutar el notebook con los datos reales y revisar las figuras.
 
-## Segundo encargo: preprocesamiento
+## Segundo encargo: preprocesamiento — IMPLEMENTADO (v0.4.0), pendiente la corrida real
+
+Hecho por bloque: B1–B5 se procesan de forma independiente, la purga se aplica a nivel de columnas y los folds usan el candidato etiquetado mientras la purga sea `null`. Ver la entrada v0.4.0 de `docs/experimental_log.md`. Encargo original:
 
 Implementar `02_preprocesamiento_ecog.ipynb` y completar `splits.py` y `datasets.py`, **reutilizando** las primitivas de `tt_ecog.preprocessing` (no reimplementarlas). Aplicar la exclusión de canales desde datos crudos antes de la CMR, procesar por segmentos independientes de cada fold con guardas, alinear ECoG(t) con flexión(t+0.2 s), interpolar el guante por segmento, generar etiquetas válidas y escaladores por fold sin fugas, y persistir arrays, máscaras, escaladores y manifiestos (`channel_map.json`, `filter_support.json`, `split_manifest.json`).
 

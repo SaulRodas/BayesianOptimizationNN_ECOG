@@ -186,6 +186,36 @@ def test_support_report_is_informational(spec):
     assert report["total_half_support_samples_target"] < 256
 
 
+def test_measured_support_within_analytic(spec):
+    result = pp.measured_support(spec, 1e-6)
+    assert 0 < result["measured_half_support_target"] <= result["analytic"]["total_half_support_samples_target"]
+
+
+@pytest.mark.parametrize("n_source", [6000, 6007])
+def test_valid_columns_do_not_depend_on_data_outside_the_segment(spec, n_source):
+    """A segment processed alone equals the same samples inside a longer record on
+    every column of feature_valid_mask (V07/V08/V09)."""
+    rng = np.random.default_rng(9)
+    before, after = 3000, 2000  # before is a multiple of the factor: same decimation grid
+    record = rng.normal(scale=20.0, size=(spec.channels.n_original, before + n_source + after))
+    alone, valid, report = pp.segment_features(record[:, before:before + n_source], spec)
+    embedded, _, _ = pp.segment_features(record, spec)
+    embedded = embedded[:, :, before // 10:before // 10 + alone.shape[-1]]
+    half = pp.chain_half_support(spec)
+    assert half == 1250 and alone.shape == (46, 40, math.ceil(n_source / 10))
+    assert np.flatnonzero(valid)[0] == math.ceil(half / 10)
+    assert np.flatnonzero(valid)[-1] == (n_source - 1 - half) // 10
+    np.testing.assert_allclose(alone[:, :, valid], embedded[:, :, valid], rtol=1e-5,
+                               atol=1e-6 * float(np.abs(embedded).max()))
+    assert report["valid_columns"] == valid.sum() and 0 <= report["negative_values_valid"] < report["values_valid"]
+    assert not np.allclose(alone[:, :, 0], embedded[:, :, 0], rtol=1e-3)
+
+
+def test_segment_features_rejects_wrong_channel_count(spec):
+    with pytest.raises(DataContractError):
+        pp.segment_features(np.zeros((47, 3000)), spec)
+
+
 # ------------------------------------------------------------------ glove
 
 def staircase(n, factor=40, phase=7, seed=6):
@@ -221,6 +251,37 @@ def test_unknown_glove_storage_raises():
     assert not info["identified"] and info["method"] == "unknown"
     with pytest.raises(DataContractError):
         pp.recover_glove_samples(noise, 40, info["phase"], FS, info)
+
+
+def test_effective_glove_on_both_storage_grids(spec):
+    stored, samples = staircase(8000, phase=0)
+    info = pp.glove_storage_inspection(stored, 1000.0, spec)
+    y25, knots = pp.effective_glove(stored, info, spec)
+    assert info["method"] == "zero_order_hold" and knots[:3].tolist() == [0, 40, 80]
+    np.testing.assert_array_equal(y25, stored[:, ::40])
+    effective = samples[:, :50]
+    info = pp.glove_storage_inspection(effective, 25.0, spec)
+    y25, knots = pp.effective_glove(effective, info, spec)
+    assert info["method"] == "effective_rate_grid" and knots[:3].tolist() == [0, 40, 80]
+    with pytest.raises(DataContractError):
+        pp.glove_storage_inspection(effective, 100.0, spec)
+
+
+def test_segment_glove_uses_only_absolute_knots_inside_the_segment(spec):
+    stored, _ = staircase(8000, phase=0)
+    y25, knots = pp.effective_glove(stored, pp.glove_storage_inspection(stored, 1000.0, spec), spec)
+    start, stop = 3010, 6000  # not a multiple of 40: the first knot inside is 3040
+    y, valid = pp.segment_glove(y25, knots, start, stop, spec)
+    targets = start + np.arange(y.shape[1]) * 10
+    assert y.shape == (5, 299) and y.dtype == np.float64
+    assert targets[valid][0] == 3040 and targets[valid][-1] == 5960 and np.isnan(y[:, ~valid]).all()
+    on_knot = valid & (targets % 40 == 0)
+    np.testing.assert_allclose(y[:, on_knot], stored[:, targets[on_knot]], rtol=0, atol=1e-12)
+    outside = y25.copy()
+    outside[:, (knots < start) | (knots >= stop)] += 1e6
+    np.testing.assert_array_equal(pp.segment_glove(outside, knots, start, stop, spec)[0], y)
+    with pytest.raises(DataContractError):
+        pp.segment_glove(y25, knots, 0, 100, spec)
 
 
 def test_cubic_interpolation_interior_and_no_extrapolation():
@@ -270,6 +331,22 @@ def test_scaler_factories_and_reshape(config):
     matrix = pp.features_to_matrix(features)
     assert matrix.shape == (4, 6) and matrix[0, 1 * 3 + 2] == features[1, 2, 0]
     np.testing.assert_array_equal(pp.matrix_to_features(matrix, 2, 3), features)
+
+
+def test_restored_scalers_match_the_fitted_ones(config):
+    rng = np.random.default_rng(10)
+    x = rng.lognormal(size=(500, 12))
+    y = rng.normal(size=(500, 5))
+    fitted_x = pp.make_feature_scaler(config).fit(x)
+    fitted_y = pp.make_target_scaler(config).fit(y)
+    restored_x = pp.restore_feature_scaler(config, fitted_x.center_, fitted_x.scale_)
+    restored_y = pp.restore_target_scaler(config, fitted_y.data_min_, fitted_y.data_max_)
+    probe = rng.lognormal(size=(50, 12)).astype(np.float32)
+    np.testing.assert_array_equal(restored_x.transform(probe), fitted_x.transform(probe))
+    np.testing.assert_array_equal(restored_y.transform(y[:7]), fitted_y.transform(y[:7]))
+    np.testing.assert_array_equal(restored_y.inverse_transform(y[:7]), fitted_y.inverse_transform(y[:7]))
+    with pytest.raises(ValueError):
+        pp.restore_feature_scaler(config, fitted_x.center_, fitted_x.scale_[:-1])
 
 
 def test_preprocessing_does_not_depend_on_eda():

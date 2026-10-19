@@ -1,7 +1,7 @@
 """Segment-aware ECoG and glove transforms: the single implementation.
 
 The EDA calls these functions in memory to draw before/after figures and
-notebook 02 applies them per fold segment. Every function receives ONE
+notebook 02 applies them per chronological block. Every function receives ONE
 contiguous segment, never mutates its input and reports its temporal
 half-support so callers can mask edges. Fold logic lives in ``splits``.
 Comparison-only alternatives (mean reference, naive slicing, ...) live in
@@ -342,6 +342,59 @@ def support_report(spec: PreprocessingSpec) -> dict[str, Any]:
                     "CMR is instantaneous. The approved purge remains pending (V04/V09)."}
 
 
+def chain_half_support(spec: PreprocessingSpec) -> int:
+    """Source samples on each side that one decimated feature depends on (exact bound)."""
+    return int(support_report(spec)["total_half_support_samples_source"])
+
+
+def feature_valid_mask(n_source: int, spec: PreprocessingSpec, half_support: int | None = None) -> np.ndarray:
+    """Decimated columns of a segment of ``n_source`` samples whose whole chain
+    context lies inside it; column k sits on source sample k*factor."""
+    half = chain_half_support(spec) if half_support is None else half_support
+    position = np.arange(math.ceil(n_source / spec.factor)) * spec.factor
+    return (position - half >= 0) & (position + half <= n_source - 1)
+
+
+def measured_support(spec: PreprocessingSpec, tolerance: float) -> dict[str, Any]:
+    """Propagate a unit impulse through FIR -> Morlet -> antialias decimation."""
+    analytic = support_report(spec)
+    # Place the impulse on a decimated sample so lag 0 is exact.
+    half = (math.ceil(analytic["total_half_support_samples_source"] / spec.factor) + 10) * spec.factor
+    n = 2 * half + 1
+    impulse = np.zeros((1, n))
+    impulse[0, half] = 1.0
+    power = morlet_power(apply_fir(impulse, spec.fir), spec.sfreq, spec.freqs, spec.n_cycles, spec.zero_mean)[0]
+    decimated = decimate(power, spec.antialias, spec.factor)
+    response = np.abs(decimated).max(axis=0)
+    response = response / response.max()
+    centre = half // spec.factor
+    lags = np.arange(response.size) - centre
+    above = np.flatnonzero(response > tolerance)
+    measured = int(max(abs(lags[above[0]]), abs(lags[above[-1]])))
+    return {"lags_target": lags, "response": response, "measured_half_support_target": measured,
+            "analytic": analytic, "tolerance": tolerance}
+
+
+def segment_features(raw: np.ndarray, spec: PreprocessingSpec,
+                     out_dtype: type = np.float32) -> tuple[np.ndarray, np.ndarray, dict[str, Any]]:
+    """Full ECoG chain on ONE raw segment (C_original, n): exclusion -> CMR -> FIR ->
+    Morlet power -> antialiased decimation.
+
+    Returns (x (C_kept, F, ceil(n/factor)), mask of columns whose context lies
+    inside the segment, report). Negative power from FIR ringing is counted on
+    valid columns and never clipped.
+    """
+    if raw.ndim != 2 or raw.shape[0] != spec.channels.n_original:
+        raise DataContractError(f"{spec.subject}: expected ({spec.channels.n_original}, n) raw ECoG; got {raw.shape}")
+    referenced = common_median_reference(exclude_channels(raw, spec.channels))
+    power, report = morlet_power_decimated(apply_fir(referenced, spec.fir), spec, out_dtype=out_dtype)
+    valid = feature_valid_mask(raw.shape[1], spec)
+    report.update(n_source=int(raw.shape[1]), n_columns=int(valid.size), valid_columns=int(valid.sum()),
+                  negative_values_valid=int(np.count_nonzero(power[:, :, valid] < 0)),
+                  values_valid=int(power[:, :, valid].size))
+    return power, valid, report
+
+
 # --------------------------------------------------------------------------- glove
 
 GLOVE_METHODS = ("zero_order_hold", "linear", "cubic_not_a_knot", "pchip")
@@ -430,6 +483,50 @@ def interpolate_glove(t_source: np.ndarray, y_source: np.ndarray,
     return values, valid
 
 
+def glove_storage_inspection(values: np.ndarray, storage_fs: float, spec: PreprocessingSpec) -> dict[str, Any]:
+    """How the stored train_dg (5, T) relates to the effective 25 Hz samples."""
+    if storage_fs == spec.sfreq / spec.glove_factor:
+        return {"identified": True, "method": "effective_rate_grid", "phase": 0,
+                "best_candidate_method": "effective_rate_grid", "relative_rms_error": 0.0,
+                "factor": 1, "tolerance": 0.0, "errors_by_method_phase": {},
+                "run_lengths": np.array([]), "change_residues": np.array([]),
+                "change_fraction_at_phase": float("nan")}
+    if storage_fs != spec.sfreq:
+        raise DataContractError(f"Glove storage rate {storage_fs} Hz is neither the ECoG nor the effective rate")
+    return inspect_glove_storage(values, spec.glove_factor)
+
+
+def effective_glove(values: np.ndarray, inspection: dict[str, Any],
+                    spec: PreprocessingSpec) -> tuple[np.ndarray, np.ndarray]:
+    """Effective glove samples (5, K) float64 and their indices on the source grid.
+
+    Sample j of a glove stored at its effective rate sits on source index
+    j*glove_factor; a glove stored on the ECoG grid needs an exact inspection.
+    """
+    if inspection["method"] == "effective_rate_grid":
+        y25 = np.array(values, dtype=np.float64)
+        return y25, np.arange(y25.shape[1]) * spec.glove_factor
+    y25, _ = recover_glove_samples(values, spec.glove_factor, inspection["phase"], spec.sfreq, inspection)
+    return y25, np.arange(inspection["phase"], values.shape[1], spec.glove_factor)
+
+
+def segment_glove(y25: np.ndarray, knot_source: np.ndarray, start_source: int, stop_source: int,
+                  spec: PreprocessingSpec) -> tuple[np.ndarray, np.ndarray]:
+    """Glove on the decimated grid of ONE segment [start_source, stop_source), built
+    only from the effective samples inside it.
+
+    Knots and targets use integer source indices, so a target that shares a
+    sample with a knot reproduces it exactly. Returns (y (5, ceil(n/factor))
+    float64 with NaN where no interpolation exists, valid mask).
+    """
+    inside = (knot_source >= start_source) & (knot_source < stop_source)
+    if int(inside.sum()) < 4:
+        raise DataContractError(f"Segment [{start_source}, {stop_source}) holds {int(inside.sum())} glove samples; "
+                                "the cubic spline needs at least 4")
+    targets = start_source + np.arange(math.ceil((stop_source - start_source) / spec.factor)) * spec.factor
+    return interpolate_glove(knot_source[inside].astype(np.float64), y25[:, inside], targets.astype(np.float64))
+
+
 # --------------------------------------------------------------------------- alignment
 
 def align_delay(x: np.ndarray, y: np.ndarray, delay: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -473,3 +570,19 @@ def make_target_scaler(config: ExperimentConfig):
     from sklearn.preprocessing import MinMaxScaler
     targets = config.data["scaling"]["targets"]
     return MinMaxScaler(feature_range=tuple(float(v) for v in targets["feature_range"]))
+
+
+def restore_feature_scaler(config: ExperimentConfig, center: np.ndarray, scale: np.ndarray):
+    """RobustScaler with persisted per-column center and scale (fold-train fit)."""
+    center, scale = np.asarray(center, dtype=np.float64), np.asarray(scale, dtype=np.float64)
+    if center.ndim != 1 or center.shape != scale.shape:
+        raise ValueError("Feature scaler parameters must be aligned one-dimensional arrays")
+    scaler = make_feature_scaler(config)
+    scaler.center_, scaler.scale_, scaler.n_features_in_ = center, scale, int(center.size)
+    return scaler
+
+
+def restore_target_scaler(config: ExperimentConfig, data_min: np.ndarray, data_max: np.ndarray):
+    """MinMaxScaler from persisted per-finger minima and maxima: fitting on those two
+    rows reproduces every learned parameter of the fold-train fit."""
+    return make_target_scaler(config).fit(np.vstack([data_min, data_max]).astype(np.float64))

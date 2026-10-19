@@ -82,23 +82,14 @@ class SubjectBundle:
     # ------------------------------------------------------------- glove
     @cached_property
     def glove_inspection(self) -> dict[str, Any]:
-        meta = self.glove_record.metadata
-        if meta["sampling_hz_glove_storage"] == meta["sampling_hz_glove_effective"]:
-            return {"identified": True, "method": "effective_rate_grid", "phase": 0,
-                    "best_candidate_method": "effective_rate_grid", "relative_rms_error": 0.0,
-                    "factor": 1, "tolerance": 0.0, "errors_by_method_phase": {},
-                    "run_lengths": np.array([]), "change_residues": np.array([]),
-                    "change_fraction_at_phase": float("nan")}
-        return pp.inspect_glove_storage(self.glove_record.values, self.spec.glove_factor)
+        return pp.glove_storage_inspection(self.glove_record.values,
+                                           self.glove_record.metadata["sampling_hz_glove_storage"], self.spec)
 
     @cached_property
     def glove25(self) -> tuple[np.ndarray, np.ndarray]:
-        info = self.glove_inspection
-        if info["method"] == "effective_rate_grid":
-            values = np.array(self.glove_record.values, dtype=np.float64)
-            return values, np.arange(values.shape[1]) / self.signal["glove"]["effective_fs_hz"]
-        return pp.recover_glove_samples(self.glove_record.values, self.spec.glove_factor,
-                                        info["phase"], self.fs, info)
+        """Effective glove samples and their physical times (first row of each hold)."""
+        y25, knots = pp.effective_glove(self.glove_record.values, self.glove_inspection, self.spec)
+        return y25, knots / self.fs
 
     @cached_property
     def glove100(self) -> tuple[np.ndarray, np.ndarray]:
@@ -115,10 +106,7 @@ class SubjectBundle:
     @cached_property
     def valid100(self) -> np.ndarray:
         """Target samples with interpolated glove and interior ECoG features."""
-        valid = self.glove100[1].copy()
-        valid[:self.edge100] = False
-        valid[len(valid) - self.edge100:] = False
-        return valid
+        return self.glove100[1] & pp.feature_valid_mask(self.n_samples, self.spec)
 
     # ------------------------------------------------------------- descriptive
     @cached_property

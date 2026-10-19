@@ -20,26 +20,6 @@ def _autocorrelation(x: np.ndarray, max_lag: int) -> np.ndarray:
     return acf / np.maximum(acf[..., :1], 1e-300)
 
 
-def measured_support(spec: pp.PreprocessingSpec, tolerance: float) -> dict:
-    """Propagate a unit impulse through FIR -> Morlet -> antialias decimation."""
-    analytic = pp.support_report(spec)
-    # Place the impulse on a decimated sample so lag 0 is exact.
-    half = (math.ceil(analytic["total_half_support_samples_source"] / spec.factor) + 10) * spec.factor
-    n = 2 * half + 1
-    impulse = np.zeros((1, n))
-    impulse[0, half] = 1.0
-    power = pp.morlet_power(pp.apply_fir(impulse, spec.fir), spec.sfreq, spec.freqs, spec.n_cycles, spec.zero_mean)[0]
-    decimated = pp.decimate(power, spec.antialias, spec.factor)
-    response = np.abs(decimated).max(axis=0)
-    response = response / response.max()
-    centre = half // spec.factor
-    lags = np.arange(response.size) - centre
-    above = np.flatnonzero(response > tolerance)
-    measured = int(max(abs(lags[above[0]]), abs(lags[above[-1]])))
-    return {"lags_target": lags, "response": response, "measured_half_support_target": measured,
-            "analytic": analytic, "tolerance": tolerance}
-
-
 @section("s11_validation", "Validación por bloques", "CV temporal por bloques B1–B5 con purga; insumos para fijarla en el paso 3")
 def run(ctx, subjects):
     validation = ctx.config.data["validation"]
@@ -101,7 +81,7 @@ def run(ctx, subjects):
 
     # 11c — measured support of the full chain vs the purge candidate.
     spec = next(iter(subjects.values())).spec
-    result = measured_support(spec, ctx.eda["support_tolerance"])
+    result = pp.measured_support(spec, ctx.eda["support_tolerance"])
     analytic = result["analytic"]
     candidate = validation["purge_candidate_for_tests"]
     fig, axes = pl.figure(1, 1, width=9, height=3.4)

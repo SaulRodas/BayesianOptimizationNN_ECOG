@@ -77,3 +77,53 @@ Las incidencias descubiertas tras una congelacion invalidaran solamente los arte
 - Hallazgo para el paso 2: tras la decimación con antialias, ~1.5 % de los valores de potencia Morlet (ruido blanco sintético) son ligeramente negativos por el rizado del FIR. Se reportan y no se recortan (protocolo §5.2). Cualquier transformación logarítmica futura debe tenerlo en cuenta; el ERSP usa el cociente de potencias promediadas.
 - Estado de datos reales: el EDA con los `.mat` reales no se ejecutó en esta entrega (los datos están en Drive). No se abrió ninguna etiqueta de prueba.
 - Pendiente: commit + push; ejecutar el notebook en Colab con los datos reales; revisar las figuras; registrar aquí el `run_id` y el hash de `artifact_manifest.json`; después, preprocesamiento por fold (notebook 02).
+
+## 2026-10-18 — v0.4.0: Paso 2, preprocesamiento por bloque, folds y escaladores
+
+- **Etapa:** paso 2 (protocolo §5), solo implementación. Los datos reales todavía no se procesaron: la corrida la ejecuta la persona usuaria en Colab con el notebook 02.
+- **Autor y control de versiones:**
+  - Claude (Claude Code), a petición y con aprobación del plan por la persona usuaria.
+  - Base `286dbc2`; cambios aún sin commit en esta entrada.
+- **EDA de referencia:**
+  - Corrida `20261019T004831Z_3a68db`, `COMPLETE`, commit `286dbc2`, tomada de las salidas locales del notebook 01.
+  - Queda fijada en `channels.reference_run`.
+  - La compuerta del paso 2 la verifica contra Drive antes de procesar: estado, `test_accessed: false`, SHA-256 de cada `.mat`, `channels.excluded`, configuración `signal` y SHA-256 de todos sus artefactos, incluidas las figuras de evidencia.
+  - El hash de su `artifact_manifest.json` queda en `p01_eda_reference.json` de la corrida del paso 2.
+- **Decisiones autorizadas por la persona usuaria:**
+  1. **Unidad independiente = bloque.**
+     - Cada bloque B1–B5 se procesa una sola vez y solo con su ECoG cruda y sus muestras efectivas del guante.
+     - Consecuencias:
+       - ninguna característica depende de otro bloque;
+       - se pierden 125 columnas a 100 Hz por borde de cada bloque (contexto FIR→Morlet→antialias de H = 990 + 139 + 121 = 1250 muestras fuente) y 20 columnas finales por el retardo;
+       - ninguna ventana cruza fronteras entre bloques de train;
+       - cambiar la purga no obliga a reprocesar.
+  2. **Purga pendiente.**
+     - Los artefactos de fold exigen una purga entera explícita (`None` es error).
+     - Mientras `purge_samples_at_100hz` sea `null`, se construyen con `purge_candidate_for_tests` (256) y quedan etiquetados `candidate_pending_V04_V09` en todos los manifiestos.
+     - `datasets.load_fold` los rechaza salvo con `allow_candidate=True`, reservado al paso 3.
+- **Semántica de la purga P**, a nivel de columnas, solo para train y sumada a las máscaras de borde:
+  - un bloque de train anterior a validación exige `y_index ≤ inicio_val − 1 − P`;
+  - uno posterior exige `x_index ≥ fin_val + P`;
+  - validación no se purga.
+  - Con P = 256 y estos bordes, el hueco efectivo es de 381 muestras antes de validación (P + 125) y 361 después (P + 105). En la prueba sintética coincidió así en los 15 folds.
+- **Decisión técnica nueva:** los escaladores fallan de forma explícita si una característica canal-frecuencia tiene rango 10–90 nulo en train o un dedo es constante. scikit-learn reemplazaría esa escala por 1 sin avisar.
+- **Implementación:**
+  - `tt_ecog.prep` (compuerta, bloques, folds, pasos, runner y CLI `python -m tt_ecog.prep`).
+  - `tt_ecog.splits` (folds y elegibilidad), `tt_ecog.datasets` (ventanas y `load_fold`) y `tt_ecog.store` (identidad por hash, manifiesto como marca de commit, reutilización solo verificada y sin sobrescribir).
+  - Notebook `02_preprocesamiento_ecog.ipynb`.
+  - En `preprocessing`: `segment_features`, `segment_glove`, `feature_valid_mask`, reconstrucción de escaladores, y los traslados de `measured_support` (desde s11) y de la inspección y recuperación del guante (desde `eda/bundle.py`). El EDA llama ahora a esas funciones; para registros de 400 s su máscara de validez es idéntica a la anterior.
+  - Configuración: `paths.preprocessing_dir`; validación de los bloques `validation` y `scaling`; `purge_for_build()` y `approved_purge()`.
+- **Layout en Drive:**
+  - `data/processed/<pipeline_hash>/`, con `S*/B*/` (`x.npy` float32 `(C, 40, N)` de potencia sin escalar, `y.npy` float64, `x_index`, `y_index = x_index + 20`, `valid`, `block_manifest.json`), `manifests/` y `folds/purge_<P>_<hash>/`.
+  - `pipeline_hash` cubre: señal, exclusiones, bloques, corrida EDA, SHA-256 crudos, fuentes que procesan y versiones de numpy/scipy/mne.
+- **Pruebas:**
+  - 169 PASS y 1 SKIP (versión commiteada del notebook 02, aún inexistente), con `python -m pytest -q`, en ~2 min, en el entorno local de la entrada anterior.
+  - Integración del paso 2 con tres sujetos sintéticos de 60 s: `COMPLETE` en ~43 s.
+  - No equivalen a V01–V14.
+- **Hallazgo sintético:** ~1.5 % de valores de potencia negativos en columnas válidas, consistente con lo informado en v0.3.0; se reportan por bloque y no se recortan.
+- **Impacto sobre resultados anteriores:** ninguno. La corrida EDA de referencia sigue siendo válida (su configuración de señal y exclusiones no cambió).
+- **Pendiente:**
+  - commit + push;
+  - ejecutar el notebook 02 en Colab;
+  - registrar aquí `pipeline_hash`, `run_id` y SHA-256 de `processed_manifest.json` y `folds_manifest.json`;
+  - después, el paso 3 (V01–V14), que decide la purga.

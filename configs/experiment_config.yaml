@@ -17,6 +17,7 @@ paths:
   manifests_dir: data/manifests
   results_dir: results
   eda_dir: results/eda
+  preprocessing_dir: results/preprocessing  # Evidencia de cada corrida del paso 2
   test_labels_dir: null  # Resolucion permitida SOLO en evaluacion final
   persistent_storage_dir: TT_ECoG  # Relativo al directorio MyDrive montado
 
@@ -40,7 +41,9 @@ channels:  # Exclusion fija; se aplica en preprocesamiento ANTES de la CMR
   index_convention: zero_based
   application_stage: preprocessing_before_common_reference
   selection_basis: ecog_acquisition_evidence_only  # nunca etiquetas, predicciones ni Pearson
-  reference_run: eda_qc_review/20261018T230228Z  # evidencia previa; hashes de origen no verificados, la nueva corrida EDA la regenera
+  # run_id de la corrida EDA COMPLETE en results/eda/<run_id>/ que contiene la evidencia;
+  # el paso 2 la valida (estado, hashes de los .mat, exclusiones, figuras) antes de procesar
+  reference_run: '20261019T004831Z_3a68db'
   excluded:
     S1:
       - index: 54

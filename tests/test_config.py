@@ -100,6 +100,50 @@ def test_antialias_must_respect_target_nyquist(config, tmp_path):
         load_config(write(tmp_path, data))
 
 
+def test_reference_run_and_preprocessing_path(config, tmp_path):
+    assert config.data["channels"]["reference_run"] == "20261019T004831Z_3a68db"
+    assert config.path(tmp_path, "preprocessing_dir").name == "preprocessing"
+    data = deepcopy(config.data)
+    data["channels"]["reference_run"] = None
+    assert load_config(write(tmp_path, data)).data["channels"]["reference_run"] is None
+    for bad in ("eda_qc_review/20261018T230228Z", "20261019T004831Z", 20261019):
+        data["channels"]["reference_run"] = bad
+        with pytest.raises(ConfigError, match="reference_run"):
+            load_config(write(tmp_path, data))
+
+
+def test_purge_is_pending_and_only_ever_a_labelled_candidate(config, tmp_path):
+    assert config.purge_for_build() == (256, "candidate_pending_V04_V09")
+    with pytest.raises(ConfigError, match="pending"):
+        config.approved_purge()
+    data = deepcopy(config.data)
+    data["validation"]["purge_samples_at_100hz"] = 300
+    approved = load_config(write(tmp_path, data))
+    assert approved.purge_for_build() == (300, "approved") and approved.approved_purge() == 300
+
+
+@pytest.mark.parametrize("key,value", [
+    ("purge_samples_at_100hz", -1), ("purge_samples_at_100hz", True), ("purge_samples_at_100hz", 2.5),
+    ("purge_candidate_for_tests", None), ("block_names", ["B1", "B2", "B3", "B4"]),
+    ("stage1_validation_blocks", ["B3"]), ("inference_stride_samples", 300),
+    ("inference_window_samples", 128), ("allow_windows_across_gaps", True), ("train_stride_samples", 0)])
+def test_validation_block_validated(config, tmp_path, key, value):
+    data = deepcopy(config.data)
+    data["validation"][key] = value
+    with pytest.raises(ConfigError):
+        load_config(write(tmp_path, data))
+
+
+@pytest.mark.parametrize("section,key,value", [
+    ("ecog", "quantile_range_percent", [0.1, 0.9]), ("ecog", "unit_variance", False),
+    ("ecog", "fit_only_on", "development"), ("targets", "feature_range", [-1, 1])])
+def test_scaling_block_validated(config, tmp_path, section, key, value):
+    data = deepcopy(config.data)
+    data["scaling"][section][key] = value
+    with pytest.raises(ConfigError):
+        load_config(write(tmp_path, data))
+
+
 @pytest.mark.parametrize("key,value", [("development_labels_use", "tuning"), ("psd_overlap_fraction", 1.0),
                                        ("lag_range_seconds", [0.0, 1.0]), ("std_ratio_levels", [20, 10]),
                                        ("figure_dpi", 0)])
