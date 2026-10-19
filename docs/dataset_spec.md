@@ -29,7 +29,7 @@ data/raw/
   sub3_comp.mat
 
 # Las etiquetas de evaluacion deben mantenerse fuera del arbol
-# accesible a EDA, QC, preprocesamiento, pilotos y Optuna:
+# accesible a EDA, preprocesamiento, pilotos y Optuna:
 <test_labels_storage>/sub1_testlabels.mat
 <test_labels_storage>/sub2_testlabels.mat
 <test_labels_storage>/sub3_testlabels.mat
@@ -42,7 +42,7 @@ Variables esperadas en `subX_comp.mat`:
 | Clave | Forma esperada (sin transponer) | Acceso |
 |---|---|---|
 | `train_data` | `(N_train_ecog, C)`; nominal `400000 x C` | Permitido desde EDA |
-| `train_dg` | `(N_train_glove_storage, 5)`; habitualmente `400000 x 5` | Permitido para entrenamiento y validación, NO para QC basado en predicción |
+| `train_dg` | `(N_train_glove_storage, 5)`; habitualmente `400000 x 5` | Permitido para entrenamiento y validación; en el EDA solo descriptivo (gráficas confirmatorias) |
 | `test_data` | `(N_test_ecog, C)`; nominal `200000 x C` | Únicamente en transformación/evaluación final; no ajustar decisiones a partir de test |
 
 Variables esperadas en el archivo de test labels:
@@ -68,12 +68,12 @@ Los archivos publicados pueden ser MATLAB clasico (`scipy.io.loadmat`); si se de
 | `X_batch` | `(B, C_validos, 40, 256)` | entrada de red |
 | `Y_batch`, `Y_hat` | `(B, 5, 256)` | objetivo y predicción |
 
-Los números de canales validos pueden diferir por sujeto después de QC. La reduccion espacial entrenable debe construirse a partir de `C_validos`, no de una constante global.
+Los números de canales validos difieren por sujeto tras la exclusión fija de `channels.excluded` (S1 61, S2 46, S3 64). La reduccion espacial entrenable debe construirse a partir de `C_validos`, no de una constante global.
 
 ## 4. Tiempos y remuestreo
 
 1. Construir un vector de tiempos a partir de la frecuencia de adquisición, la cantidad de muestras y cualquier metadato de desfase original disponible.
-2. Distinguir muestras de `train_dg` guardadas a 1 kHz de mediciones efectivas del guante a 25 Hz. Verificar el patron de sobremuestreo antes de recuperar las muestras efectivas.
+2. Distinguir muestras de `train_dg` guardadas a 1 kHz de mediciones efectivas del guante a 25 Hz. Verificar el patron de sobremuestreo antes de recuperar las muestras efectivas (`preprocessing.inspect_glove_storage`: método y fase con error de reconstrucción exacto; si no se identifica, fallar con diagnóstico). El tiempo de cada muestra efectiva es la primera fila de su bloque de 40 (ambigüedad de hasta 40 ms, documentada).
 3. Interpolar cada dedo a la rejilla de 100 Hz, usando tiempo físico y un criterio declarado para los extremos. Evitar duplicar o perder muestras por índices fuera de rango.
 4. Procesar ECoG a 100 Hz con transformación Morlet y antialias; comprobar correspondencia exacta entre timestamps de entradas y etiquetas.
 5. Aplicar retardo de 0.2 s con sentido definido: para el par valido en tiempo `t`, `X(t)` se empareja con `Y(t+0.2 s)`; a 100 Hz son 20 muestras.
@@ -110,7 +110,8 @@ Por archivo registrar:
   "n_train_samples_actual": null,
   "n_test_samples_actual": null,
   "time_origin_s": 0.0,
-  "qc_decisions_hash": null
+  "config_sha256": "CALCULATE_ON_LOAD",
+  "channel_map": "kept_original_in_effective_order"
 }
 ```
 

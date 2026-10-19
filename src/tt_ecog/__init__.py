@@ -1,3 +1,3 @@
-"""TT ECoG: development-only exploratory analysis and acquisition QC."""
+"""TT ECoG: descriptive EDA and shared preprocessing primitives for finger-flexion decoding."""
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"

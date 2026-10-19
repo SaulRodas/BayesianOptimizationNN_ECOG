@@ -28,5 +28,5 @@ Estas fuentes son material de consulta científica y técnica. La implementació
 - Registrar formato del dataset y nombre del proveedor.
 - Citar el artículo de revision de BCI Competition IV y, cuando corresponda, la descripción del conjunto de datos y la investigacion FingerFlex.
 - No afirmar replicacion exacta de los números de una publicación sin replicar preprocesamiento, cobertura temporal, selección de dedos y métrica de la evaluación original.
-- No presentar como hecho una mejora causada por el modelo cuando podria deberse a tratamiento de QC o cambio de evaluación.
+- No presentar como hecho una mejora causada por el modelo cuando podria deberse a la exclusión de canales, al preprocesamiento o a un cambio de evaluación.
 - Contrastar referencias con la versión publicada antes de integrarlas a un manuscrito; el repositorio no sustituye la fuente científica primaria.

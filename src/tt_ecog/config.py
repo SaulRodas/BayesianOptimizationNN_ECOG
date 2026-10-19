@@ -1,4 +1,4 @@
-"""Configuration validation for the EDA stage; pending values stay pending."""
+"""Configuration loading and validation; pending values stay pending."""
 
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,6 +38,24 @@ def positive(value: Any, name: str, *, zero: bool = False) -> None:
         raise ConfigError(f"{name}: expected a finite {'nonnegative' if zero else 'positive'} number")
 
 
+def _positive_int(value: Any, name: str) -> None:
+    if type(value) is not int or value < 1:
+        raise ConfigError(f"{name}: expected a positive integer")
+
+
+def _interval(value: Any, name: str, *, ordered: bool = True) -> None:
+    if not isinstance(value, list) or len(value) != 2:
+        raise ConfigError(f"{name}: expected [start, end]")
+    for item in value:
+        if isinstance(item, bool) or not isinstance(item, (int, float)) or not math.isfinite(item):
+            raise ConfigError(f"{name}: expected finite numbers")
+    if ordered and not value[0] < value[1]:
+        raise ConfigError(f"{name}: start must be lower than end")
+
+
+RESOLVABLE_PATHS = {"raw_dir", "processed_dir", "manifests_dir", "results_dir", "eda_dir"}
+
+
 @dataclass(frozen=True)
 class ExperimentConfig:
     data: dict[str, Any]
@@ -49,9 +67,128 @@ class ExperimentConfig:
         return inside(drive_root, self.data["paths"]["persistent_storage_dir"])
 
     def path(self, drive_root: Path, name: str) -> Path:
-        if name not in {"raw_dir", "processed_dir", "manifests_dir", "results_dir"}:
-            raise ConfigError(f"EDA cannot resolve path {name!r}")
+        if name not in RESOLVABLE_PATHS:
+            raise ConfigError(f"Path {name!r} cannot be resolved before its stage")
         return inside(self.storage_root(drive_root), self.data["paths"][name])
+
+    def channel_exclusions(self, subject: str) -> list[dict[str, Any]]:
+        return list(self.data["channels"]["excluded"][subject])
+
+    def excluded_channels(self, subject: str) -> tuple[int, ...]:
+        return tuple(sorted(entry["index"] for entry in self.channel_exclusions(subject)))
+
+
+def _validate_channels(channels: dict, nominal: dict[str, int], subjects: list[str]) -> None:
+    expected = {"index_convention": "zero_based",
+                "application_stage": "preprocessing_before_common_reference",
+                "selection_basis": "ecog_acquisition_evidence_only"}
+    for key, value in expected.items():
+        if channels[key] != value:
+            raise ConfigError(f"channels.{key}: expected {value!r}")
+    excluded = channels["excluded"]
+    if not isinstance(excluded, dict) or list(excluded) != subjects:
+        raise ConfigError("channels.excluded: expected exactly the keys S1, S2, S3 in order")
+    for subject, entries in excluded.items():
+        if not isinstance(entries, list):
+            raise ConfigError(f"channels.excluded.{subject}: expected a list")
+        indices = []
+        for entry in entries:
+            if not isinstance(entry, dict) or set(entry) != {"index", "reason", "evidence_figure"}:
+                raise ConfigError(f"channels.excluded.{subject}: entries need index, reason, evidence_figure")
+            index = entry["index"]
+            if type(index) is not int or not 0 <= index < nominal[subject]:
+                raise ConfigError(f"channels.excluded.{subject}: index outside 0..{nominal[subject] - 1}")
+            if not isinstance(entry["reason"], str) or not entry["reason"].strip():
+                raise ConfigError(f"channels.excluded.{subject}[{index}]: empty reason")
+            relative_path(entry["evidence_figure"], f"channels.excluded.{subject}[{index}].evidence_figure")
+            indices.append(index)
+        if len(set(indices)) != len(indices):
+            raise ConfigError(f"channels.excluded.{subject}: duplicated index")
+        if indices != sorted(indices):
+            raise ConfigError(f"channels.excluded.{subject}: indices must be sorted")
+        if len(indices) >= nominal[subject]:
+            raise ConfigError(f"channels.excluded.{subject}: cannot exclude every channel")
+
+
+def _validate_signal(signal: dict, raw: dict) -> None:
+    if signal["bandpass_hz"] != [40, 200] or signal["notch_hz"] != [60, 120, 180]:
+        raise ConfigError("signal: protocol band 40-200 Hz and lines 60/120/180 Hz are fixed")
+    if signal["common_reference"] != "common_median_instantaneous":
+        raise ConfigError("signal.common_reference must be common_median_instantaneous")
+    morlet = signal["morlet"]
+    if (morlet["n_frequencies"] != 40 or morlet["freq_range_hz"] != [40, 200] or morlet["n_cycles"] != 7
+            or morlet["zero_mean"] is not True or morlet["spacing"] != "log" or morlet["output"] != "power"):
+        raise ConfigError("signal.morlet: 40 log frequencies 40-200 Hz, 7 cycles, zero_mean, power are fixed")
+    if morlet["implementation"] != "mne_tfr_array_morlet":
+        raise ConfigError("signal.morlet.implementation: expected mne_tfr_array_morlet")
+    filtering = signal["filtering"]
+    if filtering["phase"] != "zero" or filtering["segmentwise"] is not True:
+        raise ConfigError("signal.filtering: zero-phase segmentwise filtering is required")
+    if filtering["fir_window"] != "hamming" or filtering["library"] != "scipy_firwin":
+        raise ConfigError("signal.filtering: expected scipy_firwin with a Hamming window")
+    for key in ("bandpass_l_trans_hz", "bandpass_h_trans_hz", "notch_width_hz", "notch_trans_hz"):
+        positive(filtering[key], f"signal.filtering.{key}")
+    source = raw["ecog_fs_hz"]
+    target = signal["target_fs_hz"]
+    if signal["resample"]["source_fs_hz"] != source or signal["resample"]["target_fs_hz"] != target:
+        raise ConfigError("signal.resample rates must match raw_data and target_fs_hz")
+    if source % target:
+        raise ConfigError("Source rate must be an integer multiple of the target rate")
+    aa = signal["resample"]["antialias_fir"]
+    if aa["window"] != "kaiser":
+        raise ConfigError("signal.resample.antialias_fir.window: expected kaiser")
+    for key in ("passband_hz", "stopband_hz", "attenuation_db"):
+        positive(aa[key], f"antialias_fir.{key}")
+    if not aa["passband_hz"] < aa["stopband_hz"] <= target / 2:
+        raise ConfigError("antialias_fir: passband < stopband <= target Nyquist required")
+    glove = signal["glove"]
+    if glove["effective_fs_hz"] != raw["glove_fs_effective_hz"] or glove["target_fs_hz"] != target:
+        raise ConfigError("signal.glove rates are inconsistent")
+    if glove["storage_factor"] != source // raw["glove_fs_effective_hz"]:
+        raise ConfigError("signal.glove.storage_factor must equal ecog_fs / glove_fs_effective")
+    if glove["interpolation"] != "cubic" or glove["extrapolate"] is not False:
+        raise ConfigError("signal.glove: cubic interpolation without extrapolation is required")
+    alignment = signal["temporal_alignment"]
+    if alignment["direction"] != "ecog_t_to_flexion_t_plus_delay":
+        raise ConfigError("signal.temporal_alignment.direction is fixed: ECoG(t) -> flexion(t+delay)")
+    if alignment["delay_samples_at_target_fs"] * 1000 != alignment["delay_ms"] * target:
+        raise ConfigError("delay_samples_at_target_fs must equal delay_ms * target_fs / 1000")
+
+
+def _validate_eda(eda: dict) -> None:
+    if eda["development_labels_use"] != "descriptive_only":
+        raise ConfigError("eda.development_labels_use must be descriptive_only")
+    for key in ("window_seconds", "psd_window_seconds", "line_zoom_psd_window_seconds",
+                "line_half_width_hz", "numerical_epsilon", "episode_context_seconds",
+                "excerpt_seconds", "correlation_excerpt_seconds", "autocorr_max_lag_seconds",
+                "support_tolerance"):
+        positive(eda[key], f"eda.{key}")
+    positive(eda["psd_overlap_fraction"], "eda.psd_overlap_fraction", zero=True)
+    if eda["psd_overlap_fraction"] >= 1:
+        raise ConfigError("eda.psd_overlap_fraction must be < 1")
+    levels = eda["std_ratio_levels"]
+    if not isinstance(levels, list) or not levels or levels != sorted(levels):
+        raise ConfigError("eda.std_ratio_levels: expected a sorted nonempty list")
+    for level in levels:
+        positive(level, "eda.std_ratio_levels")
+    _interval(eda["lag_range_seconds"], "eda.lag_range_seconds")
+    if not eda["lag_range_seconds"][0] < 0 < eda["lag_range_seconds"][1]:
+        raise ConfigError("eda.lag_range_seconds must include negative and positive lags")
+    diag = eda["diagnostic_morlet"]
+    _interval(diag["freq_range_hz"], "eda.diagnostic_morlet.freq_range_hz")
+    _positive_int(diag["n_frequencies"], "eda.diagnostic_morlet.n_frequencies")
+    positive(diag["n_cycles"], "eda.diagnostic_morlet.n_cycles")
+    movement = eda["movement"]
+    if not 0 < movement["speed_quantile"] < 1:
+        raise ConfigError("eda.movement.speed_quantile must lie in (0, 1)")
+    positive(movement["min_interonset_seconds"], "eda.movement.min_interonset_seconds")
+    _interval(movement["ersp_window_seconds"], "eda.movement.ersp_window_seconds")
+    _interval(movement["baseline_seconds"], "eda.movement.baseline_seconds")
+    window, baseline = movement["ersp_window_seconds"], movement["baseline_seconds"]
+    if not window[0] <= baseline[0] < baseline[1] <= min(0, window[1]):
+        raise ConfigError("eda.movement.baseline_seconds must lie inside the pre-onset ERSP window")
+    _positive_int(eda["figure_dpi"], "eda.figure_dpi")
+    _positive_int(eda["plot_max_points"], "eda.plot_max_points")
 
 
 def load_config(path: str | Path) -> ExperimentConfig:
@@ -64,12 +201,13 @@ def load_config(path: str | Path) -> ExperimentConfig:
     try:
         if not isinstance(data, dict) or data["schema_version"] != 1:
             raise ConfigError("Expected configuration schema_version=1")
-        if data["project"]["subjects"] != ["S1", "S2", "S3"]:
+        subjects = data["project"]["subjects"]
+        if subjects != ["S1", "S2", "S3"]:
             raise ConfigError("Expected independent subjects S1, S2, S3")
         if data["project"]["development_only_until_final_evaluation"] is not True:
             raise ConfigError("Development-only access is mandatory")
         paths = data["paths"]
-        for name in ("persistent_storage_dir", "raw_dir", "processed_dir", "manifests_dir", "results_dir"):
+        for name in ("persistent_storage_dir", *sorted(RESOLVABLE_PATHS)):
             relative_path(paths[name], name)
         raw = data["raw_data"]
         for name, value in {"ecog_fs_hz": 1000, "glove_fs_effective_hz": 25,
@@ -81,35 +219,11 @@ def load_config(path: str | Path) -> ExperimentConfig:
             raise ConfigError("Nominal channel counts require a documented adapter to change")
         if raw["train_file_template"] != "sub{subject_number}_comp.mat":
             raise ConfigError("Unsupported file layout; document an adapter first")
-        qc = data["quality_control"]
-        if qc["use_labels_for_detection"] is not False or qc["approval_required"] is not True:
-            raise ConfigError("QC must exclude labels and require human approval")
-        if (qc["detection_stage"] != "eda" or qc["application_stage"] != "preprocessing"
-                or qc["index_convention"] != "zero_based"):
-            raise ConfigError("QC stages and zero-based indices must follow the protocol")
-        if qc["detection_methods"] != ["robust_amplitude", "discontinuity", "flatline", "spectral", "event_grouping"]:
-            raise ConfigError("Unexpected QC detector list")
-        for name in ("robust_z", "jump_z", "flatline_fraction", "max_bad_fraction", "spectral_z", "spectral_min_duration_s"):
-            value = qc["thresholds"][name]
-            if value is not None:
-                positive(value, name, zero=name in {"flatline_fraction", "max_bad_fraction"})
-                if name.endswith("fraction") and value > 1:
-                    raise ConfigError(f"{name}: expected a fraction in [0,1]")
-        analysis = qc["analysis"]
-        for name in ("window_seconds", "psd_window_seconds", "line_half_width_hz", "numerical_epsilon"):
-            positive(analysis[name], name)
-        positive(analysis["event_merge_gap_seconds"], "event_merge_gap_seconds", zero=True)
-        overlap = analysis["psd_overlap_fraction"]
-        positive(overlap, "psd_overlap_fraction", zero=True)
-        if overlap >= 1:
-            raise ConfigError("psd_overlap_fraction must be <1")
-        if type(analysis["plot_max_points"]) is not int or analysis["plot_max_points"] < 10:
-            raise ConfigError("plot_max_points must be an integer >=10")
-        for key in ("window_seconds", "psd_window_seconds"):
-            if analysis[key] * raw["ecog_fs_hz"] < 2:
-                raise ConfigError(f"{key}: requires at least two samples")
-        if data["signal"]["bandpass_hz"] != [40, 200] or data["signal"]["notch_hz"] != [60, 120, 180]:
-            raise ConfigError("EDA spectral diagnostics must use the protocol band and line frequencies")
+        if "quality_control" in data:
+            raise ConfigError("quality_control was removed; channel exclusion lives in channels.excluded")
+        _validate_channels(data["channels"], raw["expected_channels_nominal"], subjects)
+        _validate_signal(data["signal"], raw)
+        _validate_eda(data["eda"])
     except (KeyError, TypeError) as exc:
-        raise ConfigError(f"Missing or malformed EDA configuration: {exc}") from exc
+        raise ConfigError(f"Missing or malformed configuration: {exc}") from exc
     return ExperimentConfig(data, path, hashlib.sha256(payload).hexdigest())

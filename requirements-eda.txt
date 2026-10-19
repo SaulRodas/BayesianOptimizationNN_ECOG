@@ -1,9 +1,10 @@
-# Dependencias de la primera etapa; no instala PyTorch/CUDA.
+# Dependencias del EDA (CPU); no instala PyTorch/CUDA.
 numpy>=1.26,<3
 scipy>=1.12,<2
 pandas>=2.1,<3
 PyYAML>=6.0,<7
 matplotlib>=3.8,<4
 h5py>=3.10,<4
-jsonschema>=4.21,<5
+mne>=1.8,<2
+scikit-learn>=1.4,<2
 packaging>=23,<27

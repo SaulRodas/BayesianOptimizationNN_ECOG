@@ -3,12 +3,14 @@
 **Proyecto:** Decodificación continua de la flexión de cinco dedos mediante señales electrocorticográficas (ECoG) y redes encoder–decoder 1D  
 **Fuente de datos:** BCI Competition IV — Dataset 4  
 **Sujetos:** S1, S2 y S3  
-**Versión documental:** 1.0 — especificación inicial de implementación  
+**Versión documental:** 1.1 — EDA de justificación y exclusión fija de canales (sin etapa de QC con aprobación)  
 **Fecha:** 18 de octubre de 2026  
 **Entorno previsto:** Python, PyTorch, MNE-Python, scikit-learn, Optuna y Google Colab Pro  
 **Estado:** diseño de implementación; pendiente de verificación técnica integral y de definición posterior del número de épocas.
 
-> **Principio rector.** Implementar una sola cadena reproducible de análisis, limpieza, procesamiento, entrenamiento y evaluación para los tres sujetos. Antes de iniciar la optimización bayesiana se ejecutará una verificación técnica integral. Si todas las pruebas de esa verificación son satisfactorias, se congelarán el control de calidad, el preprocesamiento, la alineación temporal, las particiones, las métricas y la arquitectura parametrizable. Si alguna prueba falla, se corregirá únicamente el componente afectado, se regenerarán sus dependencias y se repetirán las pruebas pertinentes. **El número de épocas de entrenamiento no se determina en este documento**: se fijará posteriormente, con las señales ya verificadas y los recursos de Google Colab Pro.
+> **Nota de cambio v1.1 (2026-10-18).** Por decisión de la persona usuaria se eliminó la etapa de control de calidad con umbrales, `qc_decisions.json` y aprobación. El flujo pasa a ser **EDA → Preprocesamiento**. La exclusión de canales es una lista fija (S1-54, S2-20, S2-37) definida en `configs/experiment_config.yaml` con su evidencia ECoG, y se aplica antes de la referencia común. Los parámetros explícitos de los filtros FIR y del antialias quedan fijados. Ver `docs/experimental_log.md` y `docs/channel_exclusion.md`.
+
+> **Principio rector.** Implementar una sola cadena reproducible de análisis, limpieza, procesamiento, entrenamiento y evaluación para los tres sujetos. Antes de iniciar la optimización bayesiana se ejecutará una verificación técnica integral. Si todas las pruebas de esa verificación son satisfactorias, se congelarán la exclusión de canales, el preprocesamiento, la alineación temporal, las particiones, las métricas y la arquitectura parametrizable. Si alguna prueba falla, se corregirá únicamente el componente afectado, se regenerarán sus dependencias y se repetirán las pruebas pertinentes. **El número de épocas de entrenamiento no se determina en este documento**: se fijará posteriormente, con las señales ya verificadas y los recursos de Google Colab Pro.
 
 ---
 
@@ -37,7 +39,8 @@ A, B y C deberán utilizar exactamente las mismas definiciones de datos válidos
 - Pérdida: **0.5 MSE + 0.5 (1 − similitud coseno)**.
 - Métrica principal: **Pearson macro de los cinco dedos**, calculado sobre trayectorias temporales reconstruidas.
 - Optimización bayesiana: **Optuna con TPESampler** en dos etapas, por sujeto.
-- Control de calidad: **detección y revisión en EDA; aplicación reproducible de decisiones de limpieza en preprocesamiento**.
+- Canales: **exclusión fija de S1-54, S2-20 y S2-37** (índices cero-basados), aplicada en preprocesamiento antes de la referencia común; sin máscaras temporales ni reparaciones.
+- Filtros: FIR Hamming de fase cero (kernel centrado, una pasada): pasabanda con transiciones de 10/20 Hz (331 taps) y notch de 2 Hz de rechazo y 2 Hz de transición (1651 taps); antialias Kaiser 35/50 Hz, 60 dB, antes de decimar la potencia Morlet.
 
 ### 1.2. Parámetros deliberadamente no cerrados
 
@@ -45,7 +48,6 @@ A, B y C deberán utilizar exactamente las mismas definiciones de datos válidos
 - `FINAL_MAX_EPOCHS`: límite para selección de época durante entrenamiento final.
 - `PURGE_SAMPLES`: separación temporal efectiva entre conjuntos, derivada de la verificación de soporte temporal de las transformaciones.
 - `BATCH_SIZE`: valor común de ejecución, inicialmente candidato a 128, condicionado a la memoria real disponible para las 27 arquitecturas en Colab Pro.
-- Umbrales exactos del QC y la lista de canales/interválicos a excluir: se determinarán mediante el EDA de señales crudas y se aprobarán **antes** de evaluar modelos.
 
 Los parámetros pendientes deben registrarse explícitamente como `null` o `pending` hasta su aprobación; no utilizar valores provisionales como si fueran decisiones definitivas.
 
@@ -62,8 +64,8 @@ TT-ECoG/
 │   ├── processed/                      # Datos transformados, versionados
 │   └── manifests/                      # Procedencia, particiones y checksums
 ├── notebooks/
-│   ├── 01_exploracion_ecog.ipynb        # EDA y detección de calidad
-│   ├── 02_preprocesamiento_ecog.ipynb   # Limpieza y características
+│   ├── 01_exploracion_ecog.ipynb        # EDA que justifica el preprocesamiento
+│   ├── 02_preprocesamiento_ecog.ipynb   # Exclusión de canales y características
 │   ├── 03_verificacion_pipeline.ipynb   # Pruebas de aprobación
 │   ├── 04_factibilidad_entrenamiento.ipynb
 │   ├── 05_optimizacion_etapa1.ipynb
@@ -71,8 +73,9 @@ TT-ECoG/
 │   └── 07_evaluacion_final.ipynb
 ├── src/tt_ecog/
 │   ├── io.py
-│   ├── quality_control.py
-│   ├── preprocessing.py
+│   ├── descriptive.py                  # Estadísticos descriptivos del EDA
+│   ├── eda/                            # Secciones del EDA y gráficas
+│   ├── preprocessing.py                # Primitivas únicas (EDA y paso 2)
 │   ├── splits.py
 │   ├── datasets.py
 │   ├── model.py
@@ -85,13 +88,14 @@ TT-ECoG/
 ├── configs/
 │   └── experiment_config.yaml          # Única configuración declarativa oficial
 ├── results/
-│   ├── eda_qc/
+│   ├── eda/
 │   ├── verification/
 │   ├── feasibility/
 │   ├── optuna/
 │   └── final/
 ├── tests/
-│   ├── test_quality_control.py
+│   ├── test_descriptive.py
+│   ├── test_eda.py
 │   ├── test_preprocessing.py
 │   ├── test_alignment.py
 │   ├── test_splits.py
@@ -101,7 +105,7 @@ TT-ECoG/
 │   └── test_metrics.py
 ├── docs/
 │   ├── implementation_protocol.md
-│   ├── quality_decisions.md
+│   ├── channel_exclusion.md
 │   └── experimental_log.md
 ├── requirements.txt
 └── README.md
@@ -118,7 +122,7 @@ TT-ECoG/
 - Señales ECoG con frecuencia nominal de muestreo original de **1000 Hz**.
 - Cinco trayectorias continuas de flexión del guante, nominalmente a **25 Hz**.
 - Tres sujetos tratados de forma independiente: S1, S2 y S3.
-- Desarrollo y prueba se mantendrán separados. Las etiquetas de prueba no participarán en análisis, decisiones de calidad, selección de épocas ni selección de hiperparámetros.
+- Desarrollo y prueba se mantendrán separados. Las etiquetas de prueba no participarán en análisis, exclusión de canales, selección de épocas ni selección de hiperparámetros.
 - Al cargar cada archivo, verificar explícitamente las dimensiones reales, unidades, duraciones, orden de canales, tiempos iniciales y presencia de valores no finitos; no suponer que todos los archivos tienen la misma cantidad de electrodos.
 
 ### 3.2. Convenciones de índices
@@ -141,84 +145,66 @@ La separación de seguridad comenzará con **256 muestras a 100 Hz como candidat
 
 ---
 
-## 4. Paso 1 — Exploración de datos y control de calidad (EDA + QC)
+## 4. Paso 1 — EDA de justificación del preprocesamiento
 
-**Responsables:** `01_exploracion_ecog.ipynb` y `quality_control.py`.  
-**Entrada:** señales ECoG crudas del conjunto de desarrollo.  
-**Salida:** diagnósticos, visualizaciones y un archivo de decisiones de limpieza auditado.
+**Responsables:** `01_exploracion_ecog.ipynb`, `tt_ecog/eda/` y `tt_ecog/descriptive.py`.
+**Entrada:** ECoG y guante del conjunto de desarrollo.
+**Salida:** figuras, tablas y manifiestos que justifican cada decisión de preprocesamiento.
 
-El EDA **no modificará** los archivos originales. Su objetivo es describir las señales, localizar anomalías de adquisición y decidir reglas de tratamiento basadas en evidencia ECoG, no en el desempeño predictivo.
+El EDA **no modificará** los archivos originales ni persistirá datos transformados. Las transformaciones se aplican **en memoria** con `tt_ecog.preprocessing` (la misma implementación del paso 2) sobre el registro completo de desarrollo, tratado como un segmento único, solo para graficar. Nada de lo calculado en el EDA alimenta al paso 2, que recalcula desde los datos crudos por segmento de fold.
 
-### 4.1. Inspección obligatoria para los tres sujetos
+### 4.1. Secciones obligatorias para los tres sujetos
 
-| Inspección | Medidas o visualizaciones | Finalidad |
+| Sección | Gráficas y tablas | Decisión que justifica |
 |---|---|---|
-| Integridad | Dimensiones, frecuencias, tiempos, NaN, infinitos | Detectar archivos o canales incorrectos |
-| Amplitud | Mediana, MAD, máximos, cuantiles, rangos por canal | Identificar valores extremos |
-| Discontinuidades | Diferencia entre muestras, saltos y recuperación | Detectar artefactos transitorios |
-| Señal plana | Desviación local y duración de segmentos constantes | Detectar pérdida de señal |
-| Distribución temporal | Ventanas por canal, percentiles por intervalo | Identificar cambios de régimen |
-| Espectro | PSD y energía en banda; ruido de línea | Detectar ruido espectral atípico |
-| Comparación entre canales | Distribuciones y actividad simultánea | Distinguir problemas localizados y globales |
-| Impacto temporal | Inicio, fin, duración, fracción afectada | Decidir alcance de la intervención |
+| s01 Datos | Integridad, hashes, mapa crudo y trazas | Contexto |
+| s02 Canales | Variabilidad local por canal y en el tiempo, ranking pico/típico, episodios, PSD de excluidos | Exclusión fija de S1-54, S2-20, S2-37 |
+| s03 Referencia | CAR frente a CMR durante los episodios, robustez, espectro y correlación antes/después | Mediana común instantánea de canales conservados |
+| s04 Banda | Espectro 1–500 Hz, cambio movimiento/reposo, ERSP, diseño del pasabanda | 40–200 Hz |
+| s05 Notch | Espectros de alta resolución, estacionariedad de la línea, fracción de línea por etapa | Notch 60/120/180 Hz y su ancho |
+| s06 Morlet | Familia de wavelets, escalograma, `zero_mean` y bordes | 40 frecuencias, 7 ciclos, máscaras de borde |
+| s07 Decimación | Ancho de banda de la envolvente, submuestreo directo frente a antialias, coherencia | 100 Hz con antialias |
+| s08 Guante | Patrón de almacenamiento a 1 kHz, recuperación, espectro, validación por muestras ocultas | 25 Hz y spline cúbico a 100 Hz |
+| s09 Retardo | Correlación alta gamma–flexión según el retardo | 200 ms, ECoG(t) → flexión(t+0.2 s) |
+| s10 Escalado | Colas pesadas, STD frente a escala robusta, deriva entre bloques, MinMax sin el bloque | RobustScaler(10, 90) y MinMax por fold |
+| s11 Validación | Bloques B1–B5, autocorrelación, soporte medido de la cadena | CV por bloques; insumo para fijar la purga |
 
 La proximidad de índices **no permite asumir proximidad física** entre electrodos sin un mapa de posiciones.
 
-### 4.2. Detectores reutilizables
+### 4.2. Uso de etiquetas
 
-Implementar detectores independientes del modelo:
+`train_dg` de desarrollo se usa **solo de forma descriptiva** (s04, s06–s11): las gráficas son confirmatorias y no ajustan parámetros, que permanecen fijos por este protocolo. Como observan también los bloques que actuarán como validación, si alguna gráfica contradijera un parámetro fijo se registrará y se pedirá autorización; no se cambiará el parámetro en silencio. Las etiquetas de prueba no se leen.
 
-1. **Extremos robustos:** diferencia frente a la mediana, normalizada por MAD con tratamiento seguro de MAD casi nula.
-2. **Saltos:** primera diferencia temporal robustamente anómala.
-3. **Planitud:** ventanas con variabilidad extremadamente reducida.
-4. **Ruido espectral:** anomalías marcadas y persistentes frente a la distribución de referencia de los canales.
-5. **Eventos agrupados:** consolidación de detecciones próximas para obtener episodios con comienzo, fin y duración.
+### 4.3. Exclusión fija de canales
 
-Los umbrales serán **candidatos técnicos configurables**, no disparadores automáticos e irrevocables de exclusión. Una detección dispara una revisión documentada. Los criterios se congelarán antes de iniciar el entrenamiento comparativo.
+La exclusión se decidió por calidad de adquisición, con evidencia exclusivamente de ECoG (transitorios recurrentes o extremos y ruido de línea dominante), sin usar etiquetas, predicciones ni Pearson. Vive solo en `channels.excluded` del YAML, con razón y figura de evidencia, y se aplica **antes** de la referencia común, el filtrado y Morlet, igual en desarrollo, validación y prueba. No se usan máscaras temporales ni reparaciones locales. El ruido de línea compartido (notable en S2) se trata con la referencia común y el notch, no con exclusiones.
 
-Se prohíbe elegir umbrales, ventanas o canales basándose en el Pearson, en errores de predicción o en estadísticas calculadas con las etiquetas de prueba.
+Como la inspección observó todo el desarrollo, **no debe presentarse como un criterio anidado dentro de cada fold**. Toda operación que aprenda estadísticas para transformar entradas se ajustará únicamente con el entrenamiento del fold correspondiente. No se inspeccionará el conjunto de prueba para modificar la lista.
 
-### 4.3. Decisión de tratamiento
-
-La intervención se seleccionará por calidad de adquisición y podrá ser:
-
-- **Conservar:** detección falsa o variación fisiológica plausible sin evidencia de defecto.
-- **Excluir un canal completo:** canal con defectos graves, repetidos o no tratables de manera fiable. Se excluirá del sujeto de forma consistente en desarrollo, validación y prueba.
-- **Enmascarar intervalos:** episodios localizados; las máscaras deben expandirse al soporte temporal de las transformaciones y aplicarse **antes** de definir muestras válidas para evaluar.
-- **Reparación local:** solo con una regla de reconstrucción documentada, validada técnicamente y aprobada antes de su aplicación. Nunca concatenar intervalos separados como si fueran continuos.
-
-La política principal favorecerá intervenciones simples y auditables, sin preservar artificialmente muestras contaminadas para obtener mejores puntuaciones. Si se decide excluir un canal, la lista aprobada se aplicará **antes** de calcular la referencia espacial, filtrar o realizar Morlet.
-
-### 4.4. Detección frente a calibración por fold
-
-Es válido realizar una inspección descriptiva de **todo el desarrollo** para establecer un mapa fijo de calidad de adquisición por sujeto, siempre que no se utilicen etiquetas ni métricas predictivas. No obstante, como esa inspección también observa señales que después actuarán como validación, **no debe presentarse como una política de QC completamente anidada dentro de cada fold**.
-
-Toda operación que **aprenda estadísticas** para transformar entradas o detectar anomalías adaptativamente dentro de CV se ajustará únicamente con el entrenamiento del fold correspondiente. La lista de exclusiones de adquisición se fijará una vez y no se modificará en función de los resultados de cada fold.
-
-No se inspeccionará el conjunto de prueba para modificar los criterios de QC. Los procedimientos definidos se aplicarán posteriormente sin recalibración a partir de sus etiquetas o resultados.
-
-### 4.5. Entregables del EDA
+### 4.4. Entregables del EDA
 
 ```text
-results/eda_qc/
-  qc_channels.csv
-  qc_events.csv
-  qc_summary.csv
-  qc_decisions.json
-  qc_figures/
-  qc_review_log.md
+results/eda/<run_id>/
+  fig/                      # PNG de cada sección (mostrados también en el notebook)
+  tables/                   # channel_summary.csv, line_fraction.csv, glove_storage.csv,
+                            # lag_xcorr.csv, block_stats.csv, filter_designs.json, support.json, ...
+  index.md
+  run_summary.json
+  environment.json
+  effective_config.json
+  experiment_config.yaml
+  data_manifest.json        # hashes de origen, mapas de canales, metadatos del guante
+  artifact_manifest.json    # SHA-256 de cada archivo
 ```
 
-`qc_decisions.json` contendrá por sujeto índices cero-basados, acción, justificación, intervalos afectados, detector que originó la marca, fecha de revisión y estado `approved`.
-
-**Criterio de salida del paso 1:** los tres sujetos han sido inspeccionados con el mismo procedimiento, las decisiones están aprobadas y los datos originales permanecen intactos.
+**Criterio de salida del paso 1:** los tres sujetos se describieron con el mismo procedimiento, las once secciones terminaron en `COMPLETE`, existe la figura de evidencia de cada canal excluido y los datos originales permanecen intactos.
 
 ---
 
-## 5. Paso 2 — Limpieza y preprocesamiento ECoG
+## 5. Paso 2 — Preprocesamiento ECoG
 
 **Responsables:** `02_preprocesamiento_ecog.ipynb`, `preprocessing.py`, `splits.py` y `datasets.py`.  
-**Entrada:** datos crudos, decisiones QC aprobadas, parámetros de procesamiento y esquema de folds.  
+**Entrada:** datos crudos, exclusión fija de canales, parámetros de procesamiento y esquema de folds.  
 **Salida:** datos y máscaras temporales versionados por sujeto, fold y partición.
 
 ### 5.1. Orden de procesamiento
@@ -227,7 +213,7 @@ results/eda_qc/
 |---|---|---|
 | 1 | Cargar y validar ECoG y flexión originales | Datos de origen inmutables |
 | 2 | Crear particiones temporales y coordenadas válidas | Registrar índices originales y segundos |
-| 3 | Aplicar exclusiones o máscaras del QC | Antes de filtrado, referencia común y Morlet |
+| 3 | Aplicar la exclusión fija `channels.excluded` | Antes de filtrado, referencia común y Morlet; registrar mapa original→efectivo |
 | 4 | Separar segmentos independientes con guardas temporales | No filtrar conjuntos concatenados a través de una frontera |
 | 5 | Aplicar referencia de mediana común instantánea (*Common Median Reference*) | Calcular con los canales efectivamente conservados |
 | 6 | Filtrar la banda **40–200 Hz** y rechazo de línea **60, 120, 180 Hz** | Registrar tipo, orden, longitud, fase y padding del filtro |
@@ -261,7 +247,7 @@ MinMaxScaler()
 - En el entrenamiento final, ajustar los escaladores usando solamente el desarrollo habilitado para ese entrenamiento; aplicarlos sin `fit()` sobre el conjunto de prueba.
 - Para ajustar el escalador de entradas, reorganizar temporalmente cada tensor `(C, 40, T)` como `(T, C×40)` y escalar cada combinación canal–frecuencia con estadísticas de los tiempos **de entrenamiento**. Conservar el mismo orden de columnas al transformar validación o prueba. Para el guante, ajustar sobre `(T, 5)`.
 - Los percentiles indicados son **10 y 90**, no 0.1 y 0.9.
-- El escalado robusto **no equivale** a recortar valores extremos. No introducir clipping arbitrario como sustituto del QC.
+- El escalado robusto **no equivale** a recortar valores extremos. No introducir clipping arbitrario.
 
 ### 5.3. Transformada Morlet
 
@@ -314,7 +300,7 @@ data/processed/<pipeline_hash>/
   S3/
     B1/ B2/ B3/ B4/ B5/
   manifests/
-    qc_decisions.json
+    channel_map.json
     preprocessing_config.json
     split_manifest.json
     filter_support.json
@@ -337,7 +323,7 @@ Cada fold conservará escaladores entrenados, rangos temporales originales, más
 | Prueba | Verificación requerida | Criterio de aprobación |
 |---|---|---|
 | **V01. Integridad** | Hash y formato de los datos; frecuencia, dimensiones y tipos | Los originales permanecen inmutables y las lecturas son coherentes |
-| **V02. QC consistente** | Aplicación de exclusiones/máscaras por sujeto | Decisiones aprobadas aplicadas antes de transformaciones; ningún evento grave queda sin acción o justificación |
+| **V02. Exclusión de canales** | Aplicación de `channels.excluded` por sujeto | Lista aplicada antes de la CMR y las transformaciones; reindexado correcto (C_válidos 61/46/64); un canal excluido extremo no afecta a la CMR |
 | **V03. Referencia espacial** | Mediana común instantánea | Coincide con una implementación de referencia sobre señales sintéticas |
 | **V04. Separación temporal** | Bloques B1–B5, índices, tiempos y purga | No hay intersección indebida entre pares o contextos temporales de train y validación |
 | **V05. Aislamiento de escaladores** | Perturbar validación y reconstruir fold | Escaladores y entradas de entrenamiento permanecen invariantes |
@@ -373,7 +359,7 @@ r_{\mathrm{macro}}=\frac{1}{5}\sum_{d=1}^{5}r_d.
 **Caso A — Todas las verificaciones pasan.**
 
 1. Guardar el reporte firmado de verificación y los hashes de todos los artefactos.
-2. Congelar **QC, limpieza, referencia espacial, filtrado, Morlet, alineación, escalado, particiones, inferencia, definición de métricas y arquitectura parametrizable**.
+2. Congelar **exclusión de canales, referencia espacial, filtrado, Morlet, alineación, escalado, particiones, inferencia, definición de métricas y arquitectura parametrizable**.
 3. No modificar esos componentes para intentar aumentar Pearson.
 4. Continuar a la medición de factibilidad computacional y, posteriormente, a la fijación del número de épocas.
 
@@ -509,7 +495,7 @@ Para cerrar esta decisión:
 
 ### 10.1. Requisitos de inicio
 
-No iniciar búsquedas hasta contar con: QC aprobado, pipeline congelado, las 14 verificaciones completas, presupuesto de épocas decidido y factibilidad de memoria/tiempo comprobada.
+No iniciar búsquedas hasta contar con: pipeline congelado, las 14 verificaciones completas, presupuesto de épocas decidido y factibilidad de memoria/tiempo comprobada.
 
 Optuna se configurará con almacenamiento persistente por sujeto y etapa, un generador pseudoaleatorio con semilla y registros de ejecuciones interrumpidas. Evitar sesiones que dependan exclusivamente de almacenamiento efímero.
 
@@ -583,8 +569,8 @@ Todos se entrenan de nuevo desde cero, con el mismo pipeline, política de semil
 
 1. Seleccionar la duración final usando exclusivamente desarrollo y un esquema interno común de validación.
 2. Opcionalmente, reentrenar sobre todo el desarrollo una vez establecida la duración, sin consultar prueba.
-3. Guardar checkpoint, escaladores, QC aplicado, lista de canales y configuración.
-4. Aplicar al test el **mismo** procedimiento de limpieza aprobado y la misma alineación de 200 ms; no ajustar parámetros con el test.
+3. Guardar checkpoint, escaladores, lista de canales (mapa original→efectivo) y configuración.
+4. Aplicar al test la **misma** exclusión de canales, el mismo preprocesamiento y la misma alineación de 200 ms; no ajustar parámetros con el test.
 5. Inferir por ventanas y reconstruir con overlap-add, respetando las máscaras de validez predefinidas.
 6. Calcular las métricas en los instantes válidos de la línea temporal correspondiente; no elegir cobertura después de observar las predicciones.
 7. Si se repiten semillas, usar un conjunto de semillas predefinido y reportar todas las ejecuciones sin seleccionar la mejor a partir de test.
@@ -629,7 +615,7 @@ Cada archivo de métricas por época debe registrar, al menos: `run_id`, `subjec
 
 - Semillas Python/NumPy/PyTorch, determinismo y versiones de bibliotecas.
 - Identificador de sujeto, canales originales y canales utilizados.
-- Parámetros y decisiones de EDA/QC aplicados.
+- Exclusión de canales aplicada y corrida de EDA de referencia (`run_id`).
 - Versiones y hashes de preprocesamiento, folds y escaladores.
 - Arquitectura, LR, weight decay, batch size y **número de épocas efectivamente utilizado**.
 - Modelo de GPU de Colab, memoria total, memoria pico reservada/asignada, tiempos y fallos.
@@ -639,7 +625,7 @@ Cada archivo de métricas por época debe registrar, al menos: `run_id`, `subjec
 
 | Situación | Acción |
 |---|---|
-| EDA/QC sin aprobar | No iniciar preprocesamiento definitivo |
+| EDA incompleto (alguna sección no `COMPLETE`) | No iniciar preprocesamiento definitivo |
 | Paso 3 falla | Corregir únicamente el componente defectuoso y repetir las pruebas dependientes |
 | Paso 3 pasa | Congelar los componentes metodológicos comprobados |
 | Épocas sin definir | Realizar análisis posterior de convergencia; no lanzar Optuna |
@@ -653,7 +639,7 @@ Cada archivo de métricas por época debe registrar, al menos: `run_id`, `subjec
 
 | Orden | Actividad | Entregable | Condición para avanzar |
 |---|---|---|---|
-| **1** | Exploración y QC de S1/S2/S3 | `qc_decisions.json`, reportes y figuras | Decisiones de limpieza aprobadas |
+| **1** | EDA de justificación de S1/S2/S3 | Figuras, tablas y manifiestos en `results/eda/<run_id>/` | Once secciones `COMPLETE` y evidencia de exclusiones |
 | **2** | Preprocesamiento y generación de datos por fold | Datos procesados, escaladores y manifiestos | Datos generados y trazables |
 | **3** | Verificación técnica integral | Informe de las 14 pruebas | **Todas aprobadas** |
 | **4** | Medición de factibilidad en Colab Pro | Perfil de GPU, memoria, tiempo y batch común | Recursos viables |
@@ -673,7 +659,7 @@ Cada archivo de métricas por época debe registrar, al menos: `run_id`, `subjec
 
 Toda la configuración operativa se almacena en un único archivo: **`configs/experiment_config.yaml`**, distribuido junto con este protocolo. Es la fuente de verdad de los valores concretos de ejecución, siempre bajo las restricciones metodológicas aquí descritas. No se mantendrán copias divergentes de la misma configuración en distintos notebooks o archivos.
 
-Los campos `training.search_epochs`, `training.final_max_epochs`, `training.batch_size`, `validation.purge_samples_at_100hz`, los umbrales de QC y los parámetros finales de parada permanecerán en `null` hasta que se cumpla el procedimiento de verificación y aprobación correspondiente. Una ejecución no puede rellenarlos con valores por defecto silenciosos.
+Los campos `training.search_epochs`, `training.final_max_epochs`, `training.batch_size`, `validation.purge_samples_at_100hz` y los parámetros finales de parada permanecerán en `null` hasta que se cumpla el procedimiento de verificación y aprobación correspondiente. Una ejecución no puede rellenarlos con valores por defecto silenciosos.
 
 Antes de ejecutar Optuna, deberá existir un manifiesto de aprobación del paso 3, el presupuesto común de épocas documentado, la comprobación de memoria sobre la GPU asignada por Colab Pro y estudios persistentes listos. Para ejemplos de configuración y los criterios de pruebas, consultar `docs/validation_requirements.md` y `docs/dataset_spec.md`.
 

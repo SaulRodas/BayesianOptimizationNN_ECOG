@@ -1,21 +1,20 @@
-# Encargo para Codex: implementar TT ECoG desde cero
+# Encargo para agentes: implementar TT ECoG por etapas
 
-Implementa el proyecto descrito por los documentos presentes en este repositorio. Antes de generar código, lee `AGENTS.md`, `docs/protocolo_implementacion.md`, `docs/dataset_spec.md`, `docs/validation_requirements.md` y `configs/experiment_config.yaml`.
+Implementa el proyecto descrito por los documentos de este repositorio. Antes de generar código, lee `AGENTS.md`, `docs/protocolo_implementacion.md` (v1.1), `docs/dataset_spec.md`, `docs/validation_requirements.md` y `configs/experiment_config.yaml`.
 
 **No reutilices implementaciones previas ni infieras parámetros que están `null`.** Debes preservar el número de épocas sin decidir y no comenzar Optuna hasta que exista una aprobación verificable del paso 3.
 
-## Primer encargo: solo EDA + QC
+## Primer encargo: EDA de justificación — HECHO (v0.3.0)
 
-- Crear estructura Python `src/tt_ecog/` instalable y notebook `01_exploracion_ecog.ipynb` para tres sujetos.
-- Implementar validación de formato `.mat`, hashes y gráficas de datos crudos, amplitud, MAD, discontinuidades, planitud y PSD.
-- El análisis debe generar `qc_channels.csv`, `qc_events.csv`, `qc_summary.csv`, `qc_decisions.json` propuesto (no aprobado por defecto) y gráficas.
-- No incluir decisiones especificas para un canal/sujeto en el código. No abrir etiquetas test.
-- Implementar tests con señales sintéticas y reportar que falta para una aprobación humana.
-- No modificar datos de origen, no entrenar y no ejecutar TPE.
+- Paquete instalable `src/tt_ecog/` y notebook `01_exploracion_ecog.ipynb` para tres sujetos, ejecutado desde VS Code con kernel Colab.
+- `tt_ecog.preprocessing`: primitivas únicas y por segmento (exclusión de canales, CMR, FIR pasabanda+notch, Morlet, antialias + decimación, guante 25 Hz e interpolación cúbica, retardo, fábricas de escaladores).
+- `tt_ecog.eda`: once secciones que justifican cada decisión de preprocesamiento; figuras, tablas y manifiestos en `MyDrive/TT_ECoG/results/eda/<run_id>/`.
+- La etapa de QC con umbrales y `qc_decisions.json` fue **eliminada** (decisión de la persona usuaria, 2026-10-18). La exclusión de canales es una lista fija en el YAML (`channels.excluded`: S1-54, S2-20, S2-37) con evidencia ECoG. La regla "no codificar decisiones por canal/sujeto en el código" se cumple manteniéndolas solo en el YAML.
+- Pendiente de la persona usuaria: ejecutar el notebook con los datos reales y revisar las figuras.
 
 ## Segundo encargo: preprocesamiento
 
-Solo tras aprobar `qc_decisions.json`, implementar `02_preprocesamiento_ecog.ipynb` y módulos `preprocessing.py`, `splits.py`, `datasets.py`. Aplicar QC desde datos crudos antes de transformar, respetar segmentos, guardas y límites de fold, alinear ECoG(t) con flexión(t+0.2s), generar etiquetas validas y escaladores por fold sin fugas.
+Implementar `02_preprocesamiento_ecog.ipynb` y completar `splits.py` y `datasets.py`, **reutilizando** las primitivas de `tt_ecog.preprocessing` (no reimplementarlas). Aplicar la exclusión de canales desde datos crudos antes de la CMR, procesar por segmentos independientes de cada fold con guardas, alinear ECoG(t) con flexión(t+0.2 s), interpolar el guante por segmento, generar etiquetas válidas y escaladores por fold sin fugas, y persistir arrays, máscaras, escaladores y manifiestos (`channel_map.json`, `filter_support.json`, `split_manifest.json`).
 
 ## Tercer encargo: verificación
 
@@ -25,4 +24,4 @@ Primero implementar el modelo U-Net parametrizable mínimo y funciones de loss/m
 
 Completar entrenamiento del modelo, perfilar Colab Pro; seleccionar después el número fijo de épocas; configurar Optuna TPE persistente para la etapa 1 y la etapa 2; entrenar variantes A/B/C y evaluar finalmente test con criterios congelados.
 
-**Formato de cada entrega de Codex:** cambios de archivos, comandos ejecutados, pruebas y resultados, limitaciones, pendientes y solicitud de aprobación para la etapa siguiente.
+**Formato de cada entrega:** cambios de archivos, comandos ejecutados, pruebas y resultados, limitaciones, pendientes y solicitud de aprobación para la etapa siguiente.

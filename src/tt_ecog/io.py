@@ -16,6 +16,14 @@ class DataContractError(ValueError):
     """The supplied data do not match the documented development contract."""
 
 
+class MissingDevelopmentData(FileNotFoundError):
+    """A development file is absent: the run is BLOCKED, not FAILED."""
+
+
+class StorageUnavailable(FileNotFoundError):
+    """The persistent storage root (mounted Drive) is absent: BLOCKED."""
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
@@ -68,7 +76,7 @@ def development_path(config: ExperimentConfig, drive_root: Path, subject: str) -
     if "testlabels" in path.name.lower():
         raise PermissionError("Development path resolves to test labels")
     if not path.is_file():
-        raise FileNotFoundError(f"Missing development file for {subject}: {filename}")
+        raise MissingDevelopmentData(f"Missing development file for {subject}: {filename}")
     return path
 
 
@@ -109,9 +117,12 @@ def read_ecog(config: ExperimentConfig, drive_root: Path, subject: str) -> Devel
     })
 
 
-def validate_development_labels(config: ExperimentConfig, drive_root: Path,
-                                record: DevelopmentRecord) -> dict[str, Any]:
-    """Validate train_dg independently; never expose it to QC detectors."""
+def read_development_glove(config: ExperimentConfig, drive_root: Path,
+                           record: DevelopmentRecord) -> DevelopmentRecord:
+    """Development glove (5, T_storage), readonly. Descriptive EDA and training only.
+
+    The source hash must match the ECoG read so both come from the same file.
+    """
     path = development_path(config, drive_root, record.subject)
     if sha256_file(path) != record.metadata["sha256"]:
         raise DataContractError("Source changed since ECoG load")
@@ -123,7 +134,7 @@ def validate_development_labels(config: ExperimentConfig, drive_root: Path,
     effective_fs = config.data["raw_data"]["glove_fs_effective_hz"]
     if n == ecog_n:
         storage_fs = fs
-        representation = "stored_on_ecog_grid; upsampling_pattern_not_yet_verified"
+        representation = "stored_on_ecog_grid; upsampling pattern verified by preprocessing.inspect_glove_storage"
     elif ecog_n * effective_fs == n * fs:
         storage_fs = effective_fs
         representation = "effective_rate_grid"
@@ -131,8 +142,17 @@ def validate_development_labels(config: ExperimentConfig, drive_root: Path,
         raise DataContractError(f"train_dg length {n} cannot be reconciled with {ecog_n} ECoG samples")
     if sha256_file(path) != record.metadata["sha256"]:
         raise DataContractError("Original file changed during label validation")
-    return {"loaded_variables": ["train_dg"], "adapter": adapter,
-            "shape": list(matrix.shape), "dtype": str(matrix.dtype),
-            "sampling_hz_glove_effective": effective_fs,
-            "sampling_hz_glove_storage": storage_fs, "representation": representation,
-            "duration_s": n / storage_fs, "nonfinite_count": 0}
+    return DevelopmentRecord(record.subject, values, {
+        "subject": record.subject, "sha256": record.metadata["sha256"],
+        "loaded_variables": ["train_dg"], "adapter": adapter,
+        "shape": list(matrix.shape), "dtype": str(matrix.dtype),
+        "sampling_hz_glove_effective": effective_fs,
+        "sampling_hz_glove_storage": storage_fs, "representation": representation,
+        "duration_s": n / storage_fs, "nonfinite_count": 0,
+        "use": "development only; descriptive EDA and fold training; never test labels"})
+
+
+def validate_development_labels(config: ExperimentConfig, drive_root: Path,
+                                record: DevelopmentRecord) -> dict[str, Any]:
+    """Validate train_dg and return its metadata only."""
+    return read_development_glove(config, drive_root, record).metadata

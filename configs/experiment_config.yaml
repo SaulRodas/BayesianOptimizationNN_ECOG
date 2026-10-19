@@ -16,6 +16,7 @@ paths:
   processed_dir: data/processed
   manifests_dir: data/manifests
   results_dir: results
+  eda_dir: results/eda
   test_labels_dir: null  # Resolucion permitida SOLO en evaluacion final
   persistent_storage_dir: TT_ECoG  # Relativo al directorio MyDrive montado
 
@@ -35,30 +36,51 @@ raw_data:
   test_labels_key: test_dg
   io_policy: original_readonly
 
-quality_control:
-  detection_stage: eda
-  application_stage: preprocessing
-  qc_decisions_file: null  # Generar con EDA y aprobar antes de producir datos definitivos
-  approval_required: true
-  use_labels_for_detection: false
-  detection_methods: [robust_amplitude, discontinuity, flatline, spectral, event_grouping]
-  thresholds:
-    robust_z: null  # Establecer y registrar en EDA; no ajustar por Pearson
-    jump_z: null
-    flatline_fraction: null
-    max_bad_fraction: null
-    spectral_z: null
-    spectral_min_duration_s: null
-  analysis:  # Resoluciones descriptivas; no son umbrales de exclusion
-    window_seconds: 1.0
-    psd_window_seconds: 2.0
-    psd_overlap_fraction: 0.5
-    line_half_width_hz: 1.0
-    event_merge_gap_seconds: 0.05
-    numerical_epsilon: 1.0e-12
-    plot_max_points: 4000
-  allow_local_repair_only_if_approved: true
+channels:  # Exclusion fija; se aplica en preprocesamiento ANTES de la CMR
   index_convention: zero_based
+  application_stage: preprocessing_before_common_reference
+  selection_basis: ecog_acquisition_evidence_only  # nunca etiquetas, predicciones ni Pearson
+  reference_run: eda_qc_review/20261018T230228Z  # evidencia previa; hashes de origen no verificados, la nueva corrida EDA la regenera
+  excluded:
+    S1:
+      - index: 54
+        reason: "Dos episodios transitorios (166-169 s y 195-196 s); STD local hasta 252x la tipica del canal; salto maximo 646311 u.o."
+        evidence_figure: fig/s02_S1_c054.png
+    S2:
+      - index: 20
+        reason: "Transitorios recurrentes (8-12 episodios, 29-45 s de 400 s); STD local hasta 643x la tipica; 99% de la potencia 40-200 Hz en lineas de red."
+        evidence_figure: fig/s02_S2_c020.png
+      - index: 37
+        reason: "Transitorios recurrentes (9-10 episodios, 48-60 s de 400 s); STD local hasta 1817x la tipica; STD basal anomala (376 frente a mediana 1794 del sujeto)."
+        evidence_figure: fig/s02_S2_c037.png
+    S3: []
+
+eda:  # Resoluciones descriptivas del EDA; no son decisiones ni umbrales
+  development_labels_use: descriptive_only  # train_dg solo para graficas confirmatorias; test nunca
+  window_seconds: 1.0
+  psd_window_seconds: 2.0
+  psd_overlap_fraction: 0.5
+  line_zoom_psd_window_seconds: 10.0
+  line_half_width_hz: 1.0
+  numerical_epsilon: 1.0e-12
+  std_ratio_levels: [10, 20, 50]
+  episode_context_seconds: 2.0
+  excerpt_seconds: 10.0
+  correlation_excerpt_seconds: 60.0
+  lag_range_seconds: [-1.0, 1.0]
+  autocorr_max_lag_seconds: 10.0
+  support_tolerance: 1.0e-6
+  diagnostic_morlet:  # solo para el ERSP de justificacion de banda
+    freq_range_hz: [4, 250]
+    n_frequencies: 50
+    n_cycles: 7
+  movement:
+    speed_quantile: 0.9
+    min_interonset_seconds: 1.0
+    ersp_window_seconds: [-1.0, 1.5]
+    baseline_seconds: [-1.0, -0.5]
+  figure_dpi: 110
+  plot_max_points: 4000
 
 signal:
   target_fs_hz: 100
@@ -68,8 +90,14 @@ signal:
   no_global_temporal_zscore: true
   filtering:
     segmentwise: true
-    phase: zero
-    design_and_length: derived_from_library_and_reported
+    phase: zero  # kernel FIR centrado aplicado una vez (sin filtfilt)
+    library: scipy_firwin
+    fir_window: hamming
+    bandpass_l_trans_hz: 10  # -6 dB en 35 Hz; 331 taps
+    bandpass_h_trans_hz: 20  # -6 dB en 210 Hz; atenua el armonico de 240 Hz
+    notch_width_hz: 2  # banda de rechazo por linea
+    notch_trans_hz: 2  # 1651 taps; kernel combinado +/-990 ms
+    pad: reflect_with_edge_masks
     preserve_edge_masks: true
   morlet:
     output: power
@@ -78,16 +106,26 @@ signal:
     freq_range_hz: [40, 200]
     n_cycles: 7
     zero_mean: true
+    implementation: mne_tfr_array_morlet  # decim de MNE prohibido (no tiene antialias)
   resample:
     source_fs_hz: 1000
     target_fs_hz: 100
     antialias: true
+    antialias_fir:
+      window: kaiser
+      passband_hz: 35
+      stopband_hz: 50
+      attenuation_db: 60
     preserve_timestamps: true
   glove:
     effective_fs_hz: 25
     target_fs_hz: 100
     interpolation: cubic
     validate_stored_1khz_upsampling: true
+    storage_factor: 40  # filas de 1 kHz por muestra efectiva de 25 Hz
+    sample_time: first_row_of_hold
+    spline: cubic_not_a_knot_per_segment
+    extrapolate: false
   temporal_alignment:
     delay_ms: 200
     delay_samples_at_target_fs: 20

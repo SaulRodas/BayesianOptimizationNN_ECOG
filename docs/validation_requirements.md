@@ -7,7 +7,7 @@
 ## 1. Preconditions y ambiente
 
 - `docs/dataset_spec.md` define forma, tiempos, índices y política de particion.
-- `results/eda_qc/qc_decisions.json` debe existir con estado `approved` para los tres sujetos. Sin aprobación, detener la generación definitiva.
+- `channels.excluded` de `configs/experiment_config.yaml` debe validar (índices cero-basados, razón y figura de evidencia) y debe existir una corrida de EDA `COMPLETE` (`results/eda/<run_id>/`) que contenga esas figuras. No hay archivo de aprobación de QC (eliminado en el protocolo v1.1).
 - `configs/experiment_config.yaml` debe validar estructura y tipos. `purge_samples` se determina durante estas pruebas; no utilizar valor provisional silencioso.
 - Las señales sintéticas deben contener un marcador temporal inequivoco para detectar desplazamientos y referencias incorrectas.
 - Registrar versions de Python, PyTorch, MNE, SciPy, scikit-learn y archivos de entrada mediante SHA-256.
@@ -18,7 +18,7 @@
 | ID | Objetivo | Procedimiento | Aceptacion / FAIL |
 |---|---|---|---|
 | V01 | Integridad | Leer development de S1/S2/S3, contrastar claves `.mat`, hashes, dtype, orientacion, tiempos y finitud | Forma coherente; originales inmutables; errores explicitos si clave/dimension no corresponde |
-| V02 | QC | Aplicar `qc_decisions.json` desde datos crudos y verificar mapa de índices y máscaras | Acción aprobada correcta en todos los sujetos; sin deteccion aplicada por etiquetas o Pearson |
+| V02 | Exclusión de canales | Aplicar `channels.excluded` desde datos crudos y verificar el mapa de índices original→efectivo | Lista aplicada antes de la CMR en todos los sujetos; C_válidos 61/46/64; un canal excluido extremo no altera la CMR; misma lista en train/val/test |
 | V03 | Referencia espacial | Para matrices sintéticas, comparar `x - median(x, axis=canal)` instante por instante | Error numérico dentro de tolerancia FP especificada; sin estadísticas temporales globales |
 | V04 | Splits y purga | Generar cinco bloques, segmentos train independientes, purga y validación por bloque | Índices validos disjuntos; cero ventanas que mezclen bloques o contexto prohibido |
 | V05 | Escaladores | Ajustar train, perturbar solo val y recalcular escaladores/entradas train; inspeccionar percentiles | Escaladores y train identicos; `RobustScaler(10,90)` verdadero; test jamas `fit` |
@@ -41,13 +41,13 @@
 - Comprobar el SHA-256 antes/después de lectura y que el archivo original no fue sobrescrito.
 - **No** consultar archivo `*_testlabels.mat`; un test que lo intente antes de evaluación debe fallar por guardia de permisos o inyeccion de dependencias.
 
-### V02 — Aplicación de QC
+### V02 — Aplicación de la exclusión de canales
 
-- Crear datos sintéticos con salto, pico breve y canal plano y ejecutar los detectores; generar marcas temporales en coordenadas de origen.
-- Aplicar una lista aprobada de canales/máscaras a train/val/test, sin usar labels para decidirla.
-- Verificar que la exclusion de canal cambia `C_validos`, reindexa correctamente y se aplica ANTES de referencia y Morlet.
-- Si hay máscara temporal, ampliar por soporte de transformaciones y no concatenar segmentos sin continuidad.
-- Un detector no puede excluir canales automáticamente por superar un umbral exploratorio sin decisión aprobada.
+- Usar `tt_ecog.preprocessing.channel_map` / `exclude_channels` con la lista de `channels.excluded`; la lista no se decide con etiquetas, predicciones ni Pearson.
+- Verificar que la exclusión cambia `C_validos` (S1 61, S2 46, S3 64), reindexa correctamente y conserva el mapa original→efectivo en `channel_map.json`.
+- Verificar que se aplica ANTES de la referencia común y de Morlet: inyectar un transitorio extremo en un canal excluido y comprobar que la CMR de los canales conservados no cambia.
+- Aplicar exactamente la misma lista a train, validación y test.
+- No hay máscaras temporales ni reparaciones locales; si en el futuro se autorizan, deberán ampliarse por el soporte de las transformaciones y no concatenar segmentos sin continuidad.
 
 ### V03 — Common Median Reference
 
@@ -85,7 +85,7 @@ No aplicar `zscore` estimado sobre toda la serie antes de fijar folds. CMR espac
 
 ### V07/V08 — Perturbaciones contrafactuales
 
-- Congelar decisiones QC y particiones antes del experimento de perturbación.
+- Congelar la exclusión de canales y las particiones antes del experimento de perturbación.
 - Inyectar un impulso artificial con amplitud extrema a ambos lados de cada frontera y volver a transformar.
 - Comparar valores VALIDOS de la particion contraria; tolerancia de redondeo previamente declarada y documentada.
 - El test debe usar las implementaciones reales de filtros/wavelets/decimacion, no una simulacion simplificada.
@@ -185,7 +185,7 @@ Formato mínimo de `verification_report.json`:
 
 ## 5. Regla de congelacion
 
-- **Si todos V01-V14 tienen PASS:** guardar hashes, cerrar el QC, preprocesamiento, división temporal, manejo de retardo, escalado, inferencia, métricas y arquitectura; pasar a factibilidad Colab y decisión posterior de épocas.
+- **Si todos V01-V14 tienen PASS:** guardar hashes, cerrar la exclusión de canales, preprocesamiento, división temporal, manejo de retardo, escalado, inferencia, métricas y arquitectura; pasar a factibilidad Colab y decisión posterior de épocas.
 - **Si alguno falla:** identificar componente responsable, corregirlo, regenerar artefactos afectados y repetir todas las pruebas que dependan de el. Mantener el estado de congelacion desactivado mientras exista un FAIL o BLOCKED.
 - **Si más tarde aparece un defecto genuino:** registrar incidencia y versión; invalidar/repetir solo resultados contaminados. No cambiar decisiones por puntaje de Pearson.
 

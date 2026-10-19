@@ -74,7 +74,7 @@ def test_missing_development_key(config, data_root):
 
 
 @pytest.mark.parametrize("shape", [(2000, 4), (2000, 6), (73, 5)])
-def test_invalid_labels_do_not_enter_qc(config, data_root, shape):
+def test_invalid_labels_rejected(config, data_root, shape):
     write_subject(data_root, config, labels=np.ones(shape))
     record = io.read_ecog(config, data_root, "S1")
     with pytest.raises(io.DataContractError):
@@ -103,3 +103,20 @@ def test_hdf5_development_cannot_redirect_to_external_labels(config, data_root):
         handle["train_data"] = h5py.ExternalLink("sub1_testlabels.mat", "test_dg")
     with pytest.raises(io.DataContractError, match="must not follow"):
         io.read_ecog(config, data_root, "S1")
+
+
+def test_glove_reader_returns_readonly_fingers_by_time(config, data_root):
+    write_subject(data_root, config)
+    record = io.read_ecog(config, data_root, "S1")
+    glove = io.read_development_glove(config, data_root, record)
+    assert glove.values.shape == (5, 2000)
+    assert not glove.values.flags.writeable
+    assert glove.metadata["sha256"] == record.metadata["sha256"]
+    assert glove.metadata["loaded_variables"] == ["train_dg"]
+
+
+def test_missing_data_is_a_blocked_exception(config, data_root):
+    with pytest.raises(io.MissingDevelopmentData):
+        io.read_ecog(config, data_root, "S2")
+    assert issubclass(io.MissingDevelopmentData, FileNotFoundError)
+    assert issubclass(io.StorageUnavailable, FileNotFoundError)
