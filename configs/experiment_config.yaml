@@ -13,7 +13,7 @@ project:
 
 paths:
   raw_dir: raw  # Relativo a persistent_storage_dir, en Drive
-  processed_pipeline_id: null  # Copiar el pipeline_id generado por 02; compartido desde 03
+  processed_pipeline_id: b26db4c45dc163882b7ca8ca06432b822bd231e4ec35780a0285afd34c920fff # Copiar el pipeline_id generado por 02; compartido desde 03
   processed_dir: data/processed
   manifests_dir: data/manifests
   results_dir: results
