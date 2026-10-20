@@ -265,10 +265,10 @@ optimization:
 verification:
   support_tolerance: 1.0e-6  # Tolerancia del soporte medido, independiente del EDA
   required_test_ids: [V01, V02, V03, V04, V05, V06, V07, V08, V09, V10, V11, V12, V13, V14]
-  status: pending
+  status: approved
   all_pass_required: true
   automatically_freeze_on_all_pass: false  # Emitir manifiesto, solicitar aprobacion
-  approved_manifest_file: null
+  approved_manifest_file: results/verification/20261020T021853Z_19507c/approved_pipeline_manifest.json
   isolation_tolerance: 0.0  # V07/V08 en la misma sesion: valores validos identicos bit a bit
   reproducibility_rtol: 1.0e-6  # V11: persistido frente a recalculado en otra sesion
   architecture_batch_size: 2  # V13: forward/backward de prueba, no es el batch de entrenamiento

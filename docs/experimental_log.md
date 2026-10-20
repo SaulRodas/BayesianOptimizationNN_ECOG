@@ -223,7 +223,7 @@ Las incidencias descubiertas tras una congelacion invalidaran solamente los arte
 
 ## 2026-10-19 — Decisión: purga de 256 muestras a 100 Hz
 
-- **Autorización:** decisión explícita de la persona usuaria tras revisar V04 y V09 de la primera ronda real del notebook 03, con el pipeline `b26db4c45dc163882b7ca8ca06432b822bd231e4ec35780a0285afd34c920fff` seleccionado en `e8bfe07`. Corrida del 03: `<run_id de la primera ronda>` (pendiente de registrar).
+- **Autorización:** decisión explícita de la persona usuaria tras revisar V04 y V09 de la primera ronda real del notebook 03, con el pipeline `b26db4c45dc163882b7ca8ca06432b822bd231e4ec35780a0285afd34c920fff` seleccionado en `e8bfe07`. El `run_id` de esa primera ronda no se registró; las cifras citadas abajo son las que reportó.
 - **Valor:** `validation.purge_samples_at_100hz: 256`, igual a `purge_candidate_for_tests`. El contrato efectivo no cambia: se conserva el mismo `pipeline_id` y los folds publicados por el 02; basta repetir el 03.
 - **Evidencia V09 (BLOCKED solo por la purga pendiente, sin problemas):** FIR pasabanda+notch de 1981 taps y antialias Kaiser dentro de diseño (líneas ≤ −40 dB; antialias ≤ −59 dB desde 50 Hz); Morlet 40 frecuencias, 7 ciclos, `zero_mean`. Medio soporte analítico de la cadena: FIR 990 + Morlet 139 + antialias 121 = 1250 muestras a 1000 Hz (1.25 s, ±125 a 100 Hz). Soporte medido con impulso: ±70 a 100 Hz (tolerancia 1e-6). Las máscaras exigen ±125 columnas de contexto dentro del bloque en los 15 bloques; rejilla de 100 Hz uniforme y alineada.
 - **Evidencia V04 (BLOCKED solo por la purga pendiente, sin incidencias en los 15 folds):**
@@ -231,5 +231,13 @@ Las incidencias descubiertas tras una congelacion invalidaran solamente los arte
   - Con 256, hueco efectivo de 381 muestras antes de validación y 361 después (3.81 s / 3.61 s). Sin purga sería ≈230 a cada lado (máscaras ±125 y retardo de 20).
   - Costo: 131 columnas del bloque posterior y 151 del anterior; columnas de train 30 869 (val_B1), 30 718 (B2–B4), 30 849 (val_B5) frente a 31 000 sin purga, ≈0.9 %. Idéntico en los tres sujetos.
 - **Justificación:** la purga no se deriva del aislamiento (mínimo 0) ni de la longitud de ventana. Se elige como margen adicional frente a la dependencia temporal entre muestras vecinas de train y validación, con un costo menor al 1 % de las columnas de entrenamiento y sin regenerar el pipeline. No se usó Pearson ni ningún resultado de entrenamiento.
-- **Pendiente:** segunda ronda del 03 con el YAML actualizado; la aprobación del paso 3 exige V01–V14 PASS (incluidas V07/V08) y pytest PASS. Después registrar `verification.status: approved` y `verification.approved_manifest_file`.
+- **Seguimiento:** segunda ronda del 03 y aprobación del paso 3 registradas en la entrada del 2026-10-20.
 - **Tests ajustados:** `tests/test_config.py` dejaba fijos en `null` la purga y `paths.processed_pipeline_id` del YAML real; ahora bloquea la purga aprobada (256, `approved`) y conserva la validación de formato del identificador. `tests/conftest.py::project` parte explícitamente de la purga pendiente para que los escenarios sintéticos de candidato no dependan de la decisión registrada. `tests/test_config.py`: 49 PASS en local; la suite completa se ejecuta en la segunda ronda del 03.
+
+## 2026-10-20 — Aprobación del paso 3 (V01–V14)
+
+- **Autorización:** la persona usuaria registró `verification.status: approved` y `verification.approved_manifest_file` tras la segunda ronda del notebook 03.
+- **Corrida:** `20261020T021853Z_19507c`, con la purga aprobada (256) y el pipeline `b26db4c45dc163882b7ca8ca06432b822bd231e4ec35780a0285afd34c920fff`. Commit esperado: `adab2c6` (purga aprobada); el commit exacto queda en el reporte de la corrida.
+- **Evidencia en Drive:** `TT_ECoG/results/verification/20261020T021853Z_19507c/`: `approved_pipeline_manifest.json`, `verification_report.json`, `verification_summary.md`, `test_results.xml` y `artifact_manifest.json`. El 03 solo emite el manifiesto de aprobación con V01–V14 PASS y pytest PASS; las etapas 04–07 vuelven a comprobar ese reporte y los hashes antes de cargar datos.
+- **Impacto:** los datos y folds conservan el mismo `pipeline_id`. Un cambio posterior en `preprocessing.py`, `splits.py`, `datasets.py`, `model.py`, `losses.py`, `metrics.py`, `validation.py`, `prep/blocks.py`, `prep/folds.py` o en las secciones `model`, `training.loss` y `metrics` del YAML invalida la aprobación y exige repetir el 03.
+- **Siguiente:** notebook 04 en GPU (recursos y piloto de 50 épocas candidatas); después decidir `training.batch_size` y `training.search_epochs`.
