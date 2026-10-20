@@ -8,4 +8,4 @@ h5py>=3.10,<4
 mne>=1.8,<2
 scikit-learn>=1.4,<2
 packaging>=23,<27
-ipython>=8,<10
+ipython>=7.34,<10
