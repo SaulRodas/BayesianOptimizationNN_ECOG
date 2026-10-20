@@ -119,10 +119,13 @@ SUBJECTS = ("S1", "S2", "S3")
 
 
 def project(base, processed_pipeline_id=None, **validation):
-    """Project shell with explicit pipeline selection and optional validation overrides."""
+    """Project shell with explicit pipeline selection and optional validation overrides.
+
+    Starts from the pending purge, independent of the decision recorded in the real YAML."""
     (base / "p/configs").mkdir(parents=True)
     data = yaml.safe_load((ROOT / "configs/experiment_config.yaml").read_text(encoding="utf-8"))
     data["paths"]["processed_pipeline_id"] = processed_pipeline_id
+    data["validation"]["purge_samples_at_100hz"] = None
     data["validation"].update(validation)
     path = base / "p/configs/experiment_config.yaml"
     path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")

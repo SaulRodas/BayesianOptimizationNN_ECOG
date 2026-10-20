@@ -143,7 +143,7 @@ validation:
   block_names: [B1, B2, B3, B4, B5]
   stage1_validation_blocks: [B2, B4]
   stage2_validation_blocks: [B1, B2, B3, B4, B5]
-  purge_samples_at_100hz: null  # Aprobar luego de V04-V09; 256 solo candidato, no decision
+  purge_samples_at_100hz: 256  # Aprobada 2026-10-19 con V04/V09 reales; ver docs/experimental_log.md
   purge_candidate_for_tests: 256
   train_window_samples: 256
   train_stride_samples: 1

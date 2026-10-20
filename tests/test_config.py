@@ -17,7 +17,6 @@ def test_pending_scientific_values_preserved(config):
     assert config.data["training"]["search_epochs"] is None
     assert config.data["training"]["final_max_epochs"] is None
     assert config.data["training"]["batch_size"] is None
-    assert config.data["validation"]["purge_samples_at_100hz"] is None
     assert config.data["paths"]["test_labels_dir"] is None
     with pytest.raises(ConfigError):
         config.path(ROOT, "test_labels_dir")
@@ -102,7 +101,6 @@ def test_antialias_must_respect_target_nyquist(config, tmp_path):
 
 def test_selected_pipeline_id(config, tmp_path):
     assert "reference_run" not in config.data["channels"]
-    assert config.data["paths"]["processed_pipeline_id"] is None
     data = deepcopy(config.data)
     for bad in ("../outside", "a" * 16, 42, "z" * 64):
         data["paths"]["processed_pipeline_id"] = bad
@@ -112,11 +110,21 @@ def test_selected_pipeline_id(config, tmp_path):
     assert load_config(write(tmp_path, data)).data["paths"]["processed_pipeline_id"] == "a" * 64
 
 
+def test_approved_purge_regression_lock(config):
+    # Approved 2026-10-19 from real V04/V09 (docs/experimental_log.md); equal to the
+    # candidate, so the published pipeline_id is preserved.
+    validation = config.data["validation"]
+    assert validation["purge_samples_at_100hz"] == validation["purge_candidate_for_tests"] == 256
+    assert config.purge_for_build() == (256, "approved") and config.approved_purge() == 256
+
+
 def test_purge_is_pending_and_only_ever_a_labelled_candidate(config, tmp_path):
-    assert config.purge_for_build() == (256, "candidate_pending_V04_V09")
-    with pytest.raises(ConfigError, match="pending"):
-        config.approved_purge()
     data = deepcopy(config.data)
+    data["validation"]["purge_samples_at_100hz"] = None
+    pending = load_config(write(tmp_path, data))
+    assert pending.purge_for_build() == (256, "candidate_pending_V04_V09")
+    with pytest.raises(ConfigError, match="pending"):
+        pending.approved_purge()
     data["validation"]["purge_samples_at_100hz"] = 300
     approved = load_config(write(tmp_path, data))
     assert approved.purge_for_build() == (300, "approved") and approved.approved_purge() == 300
