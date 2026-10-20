@@ -105,7 +105,11 @@ def frozen_run(final_config, tiny_fold, tmp_path):
 
 
 def test_freezing_integrity_reuse_and_explicit_resume(final_config, frozen_run, tmp_path):
-    assert io.verify_final_run(final_config, frozen_run)['pipeline_id'] == 'a' * 64
+    frozen = io.verify_final_run(final_config, frozen_run)
+    assert frozen['pipeline_id'] == 'a' * 64
+    assert 'src/tt_ecog/final_evaluation.py' in frozen['source_sha256']
+    assert 'src/tt_ecog/reporting.py' not in frozen['source_sha256']
+    assert not any('/eda/' in p for p in frozen['source_sha256'])
     final_config.data['paths']['final_run_id'] = frozen_run.name
     assert io.open_final_run(final_config, tmp_path, plans(), 'cpu') == frozen_run
     assert io.freeze_final_run(final_config, frozen_run)['run_id'] == frozen_run.name

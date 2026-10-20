@@ -107,6 +107,23 @@ def test_resume_restores_adamw_dropout_and_window_order(config, tiny_fold, tmp_p
         load_training_checkpoint(path, fresh, fresh_optimizer, other_train, tiny_fold.pipeline_id)
 
 
+def test_loader_workers_keep_batches_order_and_resume_state(tiny_fold):
+    """Workers only parallelise batch assembly: same windows, order and generator state."""
+    def three_epochs(workers):
+        train, _ = make_loaders(tiny_fold, 2, 5, workers=workers)
+        epochs = [[(x.clone(), y.clone()) for x, y in train] for _ in range(3)]
+        return epochs, train.generator.get_state()
+    serial, serial_state = three_epochs(0)
+    parallel, parallel_state = three_epochs(2)
+    assert torch.equal(serial_state, parallel_state)
+    for one, other in zip(serial, parallel):
+        assert len(one) == len(other)
+        for (x1, y1), (x2, y2) in zip(one, other):
+            assert torch.equal(x1, x2) and torch.equal(y1, y2)
+    with pytest.raises(ValueError, match="workers"):
+        make_loaders(tiny_fold, 2, 5, workers=-1)
+
+
 def test_interrupted_checkpoint_preserves_last_complete(config, tiny_fold, tmp_path, monkeypatch):
     train, _ = make_loaders(tiny_fold, 2, 1)
     model = small_model()
@@ -149,8 +166,11 @@ def test_profile_reports_oom_without_changing_batch(config, tiny_fold, monkeypat
 
 
 def test_training_blocked_before_any_approval(config, tmp_path):
+    # Pending approval, independent of the decision recorded in the real YAML.
+    data = deepcopy(config.data)
+    data["verification"].update(status="pending", approved_manifest_file=None)
     with pytest.raises(StoreError, match="V01-V14"):
-        approved_pipeline(config, tmp_path)
+        approved_pipeline(ExperimentConfig(data, config.source, "fixture"), tmp_path)
 
 
 def approval_fixture(prepared, tmp_path):
@@ -222,7 +242,8 @@ def test_notebook_training_cells_execute_on_synthetic_cpu_data(config_copy, tiny
 
 
 @pytest.mark.parametrize("field,value", [("search_epochs_candidate", 0), ("batch_size", -1),
-                                         ("optimizer", "sgd"), ("scheduler", "cosine")])
+                                         ("optimizer", "sgd"), ("scheduler", "cosine"),
+                                         ("loader_workers", -1), ("loader_workers", 1.5)])
 def test_training_rejects_invalid_execution_config(config_copy, field, value):
     import yaml
     data = yaml.safe_load(config_copy.read_text(encoding="utf8"))

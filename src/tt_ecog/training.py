@@ -36,12 +36,19 @@ def fold_seed(config, subject, val_block):
     return config.data["project"]["seed_base"] + subjects.index(subject) * len(blocks) + blocks.index(val_block)
 
 
-def make_loaders(fold, batch_size: int, seed: int):
+def make_loaders(fold, batch_size: int, seed: int, workers: int = 0):
+    """Batches and their order depend only on ``seed``. ``workers`` (training.loader_workers)
+    only assembles training batches in parallel and pins them for an asynchronous GPU copy."""
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("batch_size must be a positive integer")
+    if type(workers) is not int or workers < 0:
+        raise ValueError("workers must be a nonnegative integer")
     generator = torch.Generator().manual_seed(seed)
+    # Workers restart every epoch: persistent workers would stop drawing the per-epoch
+    # base seed from ``generator`` and change the shuffle (and resume state) after epoch 1.
     train = DataLoader(FoldWindows(fold, "train"), batch_size=batch_size, shuffle=True,
-                       generator=generator, num_workers=0, drop_last=False)
+                       generator=generator, num_workers=workers, drop_last=False,
+                       pin_memory=workers > 0 and torch.cuda.is_available())
     val = DataLoader(FoldWindows(fold, "val"), batch_size=batch_size, shuffle=False,
                      num_workers=0, drop_last=False)
     return train, val
@@ -57,7 +64,7 @@ def make_optimizer(model, learning_rate: float, weight_decay: float):
 def train_batch(model, optimizer, loss_fn, x, y, device):
     """One complete update; used identically for profiling and training."""
     model.train()
-    x, y = x.to(device), y.to(device)
+    x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
     optimizer.zero_grad(set_to_none=True)
     loss = loss_fn(model(x), y)
     if not torch.isfinite(loss):

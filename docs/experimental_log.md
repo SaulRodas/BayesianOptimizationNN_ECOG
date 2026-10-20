@@ -221,6 +221,44 @@ Las incidencias descubiertas tras una congelacion invalidaran solamente los arte
 - **Comprobaciones adicionales:** 264 pruebas de las etapas previas se pueden recolectar con la importación de Optuna bloqueada; esto comprueba independencia de dependencias, no una nueva ejecución completa de esas 264 pruebas. Notebooks válidos, celdas compilables y sin salidas guardadas; `git diff --check` satisfactorio. El aviso gráfico de Agg en el piloto sintético no impide guardar la figura.
 - **Pendiente real:** commit/push, 02 seleccionado, 03 aprobado, 04 en GPU y decisión de batch/épocas; luego ejecutar 05 → 06. La evaluación final A/B/C no se implementó en esta continuación y las pruebas sintéticas no aprueban V01–V14 real.
 
+## 2026-10-19 — Notebook 07: selección de duración y evaluación final A/B/C
+
+- **Autorización:** la persona usuaria pidió implementar el 07 y eligió explícitamente **B5**
+  como validación interna común para A/B/C y los tres sujetos. Se actualizan protocolo,
+  contrato, YAML e instrucciones. Máximo final, paciencia y `min_delta` permanecen pendientes;
+  las 50 épocas propuestas siguen correspondiendo al piloto.
+- **Implementación:** `07_evaluacion_final.ipynb` muestra selección de épocas con el fold B5
+  purgado, refit desde cero con todo desarrollo, congelación y evaluación. A conserva
+  parámetros de referencia; B utiliza LR/WD de 05; C añade arquitectura de 06. Se exigen
+  estudios completos del mismo sujeto/pipeline. Se usan las funciones existentes de AdamW,
+  pérdida, métricas, preprocesamiento y ventanas; no hay concatenación temporal entre bloques.
+- **Recuperación y trazabilidad:** `paths.final_run_id` selecciona explícitamente la corrida.
+  Checkpoints conservan AdamW, RNG e historial. Un solo par de escaladores por sujeto se
+  ajusta con desarrollo válido y sirve a A/B/C. `frozen.json` se escribe atómicamente después
+  de completar todos los modelos, vincula decisiones y hashes al mismo `pipeline_id` y
+  congela componentes numéricos, sin dependencia operativa del EDA o de sus figuras.
+- **Test:** el lector requiere aprobación V01–V14 y modelos congelados antes de resolver las
+  etiquetas. Lee exclusivamente `test_data`/`test_dg`, comprueba formato clásico/HDF5 y hashes
+  antes/después, y exige el mismo archivo de competencia que originó el pipeline. Las
+  máscaras, tiempos, escaladores y cobertura son comunes a A/B/C. Resultados por sujeto se
+  publican solo completos; una reanudación no reentrena modelos congelados ni reabre test
+  ya terminado. Tablas, figuras, predicciones, verdad alineada y cobertura quedan en
+  `results/evaluation/<run_id>/`, separados de los arrays de desarrollo.
+- **Pruebas:** 140 PASS en regresión (79.02 s), 38 PASS en integridad/lectura (16.57 s) y
+  dos PASS de integración (76.17 s): **142 casos distintos** entre estas corridas. Los casos
+  repetidos no se suman como pruebas nuevas. Se ejecutaron las celdas del 07 con U-Net y
+  archivos MATLAB sintéticos, con interrupciones en selección y refit. Se comprobó igualdad
+  exacta de las entradas visibles con las primitivas compartidas, tiempos, máscaras y
+  etiquetas; además, recuperación, corrupción, publicación interrumpida, prohibición de
+  lectura de test desde desarrollo y métricas en unidades originales. El aviso de Agg en
+  la prueba del piloto 04 solo indica que el backend de pruebas no abre una ventana gráfica.
+  Evidencias: `results/final_regression.xml`, `results/final_integrity.xml` y
+  `results/final_notebook_integration.xml`.
+- **Alcance real:** no se ejecutaron entrenamientos experimentales, búsquedas reales ni se
+  abrieron etiquetas de test reales. No se declara V01–V14 aprobado. Faltan ejecutar las
+  etapas reales en Colab, documentar aprobación y decidir los parámetros aún `null` antes de
+  habilitar el 07. Se preservan cambios locales y corridas históricas; no se hizo commit/push.
+
 ## 2026-10-19 — Decisión: purga de 256 muestras a 100 Hz
 
 - **Autorización:** decisión explícita de la persona usuaria tras revisar V04 y V09 de la primera ronda real del notebook 03, con el pipeline `b26db4c45dc163882b7ca8ca06432b822bd231e4ec35780a0285afd34c920fff` seleccionado en `e8bfe07`. El `run_id` de esa primera ronda no se registró; las cifras citadas abajo son las que reportó.
@@ -241,3 +279,12 @@ Las incidencias descubiertas tras una congelacion invalidaran solamente los arte
 - **Evidencia en Drive:** `TT_ECoG/results/verification/20261020T021853Z_19507c/`: `approved_pipeline_manifest.json`, `verification_report.json`, `verification_summary.md`, `test_results.xml` y `artifact_manifest.json`. El 03 solo emite el manifiesto de aprobación con V01–V14 PASS y pytest PASS; las etapas 04–07 vuelven a comprobar ese reporte y los hashes antes de cargar datos.
 - **Impacto:** los datos y folds conservan el mismo `pipeline_id`. Un cambio posterior en `preprocessing.py`, `splits.py`, `datasets.py`, `model.py`, `losses.py`, `metrics.py`, `validation.py`, `prep/blocks.py`, `prep/folds.py` o en las secciones `model`, `training.loss` y `metrics` del YAML invalida la aprobación y exige repetir el 03.
 - **Siguiente:** notebook 04 en GPU (recursos y piloto de 50 épocas candidatas); después decidir `training.batch_size` y `training.search_epochs`.
+
+## 2026-10-20 — Carga de datos en paralelo para el entrenamiento
+
+- **Autorización:** la persona usuaria aprobó optimizar la carga de datos antes de decidir `training.search_epochs`.
+- **Motivo (medido en el 04, S3/val_B2, batch 128, float32):** tiempo por actualización completa (copia a GPU, forward, backward y AdamW) de 0.138 / 0.361 / 0.579 s para las arquitecturas pequeña / referencia / grande, ~233 pasos por época: 32 / 84 / 135 s por época sin carga de datos. El piloto de referencia midió ~134 s por época con validación, así que ~50 s (≈37 %) correspondían a armar batches en el proceso principal (`num_workers=0`; ~335 MB por batch). Memoria pico ≤ 1.24 GB reservados.
+- **Cambio:** `make_loaders` recibe `workers` desde `training.loader_workers: 2`. Solo el loader de entrenamiento usa procesos auxiliares y, con CUDA, `pin_memory`; la copia en `train_batch` es `non_blocking`. Validación sin workers (un batch). `persistent_workers` permanece desactivado: con PyTorch 2.14, el iterador toma una semilla del generador al crearse y la reutilización de workers dejaría de hacerlo desde la época 2, cambiando el orden. Las ventanas son una función determinista del índice y el orden lo decide el generador del proceso principal, por lo que batches, orden, estado del generador guardado en checkpoints y resultados no cambian.
+- **Alcance:** solo rendimiento. `training.py`, `config.py`, YAML, notebooks 04–07 y tests; `datasets.py` y los demás componentes verificados por el 03 no cambian, así que la aprobación de `20261020T021853Z_19507c` sigue vigente. El nuevo campo queda registrado en el `config.json` de cada corrida.
+- **Pruebas locales (CPU, Windows):** nuevo test de equivalencia 0 frente a 2 workers durante tres épocas (mismos tensores, orden y estado del generador) y validación del campo. `tests/test_training.py` + `tests/test_config.py`: 66 PASS. Ejecución sintética de las celdas de 05/06 y 07: PASS. Se corrigió `test_training_blocked_before_any_approval`, que dependía de que el YAML real no tuviera aprobación. Dos pruebas de `tests/test_optimization.py` con trials sintéticos (sin `DataLoader`) fallan en este equipo con `PermissionError` al reemplazar `study.zip` dentro de la carpeta sincronizada por OneDrive; no dependen de este cambio y quedan por confirmar fuera de OneDrive o en Colab.
+- **Pendiente:** medir en la GPU de Colab el tiempo real por época con workers (próximo piloto) antes de recalcular el costo de 30/40/50 épocas.

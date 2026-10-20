@@ -504,7 +504,11 @@ def freeze_final_run(config, output):
                 relative = f"{subject}/{variant}/{name}"
                 files[relative] = sha256_file(output / relative)
     source = config.source.parent.parent
-    code = {p.relative_to(source).as_posix(): sha256_file(p) for p in sorted((source / "src/tt_ecog").rglob("*.py"))}
+    # Freeze numerical/methodological code, not optional EDA or presentation code.
+    # Full source provenance is already recorded in environment.json.
+    components = ("preprocessing.py", "splits.py", "datasets.py", "model.py", "losses.py", "metrics.py",
+                  "validation.py", "prep/blocks.py", "prep/folds.py", "training.py", "final_evaluation.py", "io.py")
+    code = {f"src/tt_ecog/{name}": sha256_file(source / "src/tt_ecog" / name) for name in components}
     frozen = {**plan, "decisions": decisions, "files": files, "source_sha256": code,
               "frozen_at_utc": utc_now(), "test_accessed_at_freeze": False}
     atomic_json(output / "frozen.json", frozen)

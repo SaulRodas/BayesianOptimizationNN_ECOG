@@ -210,6 +210,7 @@ training:
   search_epochs_candidate: 50  # Propuesta de la persona usuaria; piloto, no aprobacion automatica
   profile_warmup_steps: 2
   profile_measured_steps: 3
+  loader_workers: 2  # Solo rendimiento: procesos que arman batches de train en paralelo; mismos batches y orden
   final_max_epochs: null  # DECISION POSTERIOR, separada de search_epochs
   final_validation_block: B5  # Autorizado: bloque interno comun para A/B/C y los tres sujetos
   search_early_stopping: false

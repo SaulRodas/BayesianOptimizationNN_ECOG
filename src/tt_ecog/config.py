@@ -279,6 +279,8 @@ def _validate_training_and_metrics(training: dict, metrics: dict) -> None:
     for key in ("batch_size", "search_epochs", "final_max_epochs"):
         if training[key] is not None:
             _positive_int(training[key], f"training.{key}")
+    if type(training["loader_workers"]) is not int or training["loader_workers"] < 0:
+        raise ConfigError("training.loader_workers: expected a nonnegative integer")
     loss = training["loss"]
     if (loss["name"] != "mse_plus_temporal_cosine" or loss["mse_weight"] != 0.5 or loss["cosine_weight"] != 0.5
             or loss["cosine_axis"] != "temporal_per_finger"):
