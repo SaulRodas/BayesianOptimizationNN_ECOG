@@ -285,7 +285,7 @@ verification:
   status: approved
   all_pass_required: true
   automatically_freeze_on_all_pass: false  # Emitir manifiesto, solicitar aprobacion
-  approved_manifest_file: results/verification/20261020T021853Z_19507c/approved_pipeline_manifest.json
+  approved_manifest_file: results/verification/20261021T051447Z_a0e687/approved_pipeline_manifest.json
   isolation_tolerance: 0.0  # V07/V08 en la misma sesion: valores validos identicos bit a bit
   reproducibility_rtol: 1.0e-6  # V11: persistido frente a recalculado en otra sesion
   architecture_batch_size: 2  # V13: forward/backward de prueba, no es el batch de entrenamiento
