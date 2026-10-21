@@ -194,11 +194,14 @@ def test_prediction_inverse_scaling_and_full_coverage(final_config, tiny_fold):
 
 def test_variants_use_completed_subject_studies(final_config, tmp_path):
     from tt_ecog.optimization import search_session
-    from test_optimization import fill_study
+    from test_optimization import fill_study, fill_reevaluation
+    final_config.data['optimization']['stage1']['reevaluation']['top_trials'] = 1
     for stage in ('stage1', 'stage2'):
         final_config.data['optimization'][stage]['trials_per_subject'] = 1
         with search_session(final_config, tmp_path, 'S1', stage) as session:
             fill_study(session)
+            if stage == 'stage1':
+                fill_reevaluation(session)
     result = selected_variants(final_config, tmp_path, 'S1')
     a, b, c = (result[v] for v in VARIANTS)
     assert a['learning_rate'] == 8.42e-5 and a['weight_decay'] == 1e-4

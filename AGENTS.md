@@ -16,7 +16,8 @@ las comprobaciones necesarias para datos aprobados, aislamiento, finitud, cobert
 Preparar este código no autoriza a ejecutar entrenamientos reales ni Optuna antes de V01–V14.
 
 **Preparación de Optuna autorizada (2026-10-19):** implementar 05/06 y probar sus operaciones
-con datos sintéticos antes de ejecutar experimentos. Mantener los presupuestos 20×2 y 10×5,
+con datos sintéticos antes de ejecutar experimentos. Mantener los presupuestos 20×2 y 10×5
+(más la reevaluación de finalistas autorizada en v1.3),
 la referencia dentro de las diez propuestas y el mismo `pipeline_id`. La ejecución real sigue
 condicionada a V01–V14 aprobado, purga, batch común y épocas de búsqueda decididos. Recuperar
 estudios sin ampliar presupuestos ni reemplazar trials fallidos automáticamente.
@@ -28,6 +29,11 @@ manteniendo los bloques independientes y ajustando escaladores solo con desarrol
 Máximo final, paciencia y min_delta siguen pendientes. Congelar los nueve modelos antes de
 abrir test; no reentrenar ni retocar decisiones después. Preparar código no autoriza la ejecución
 experimental, que requiere aprobación V01–V14, 05/06 completos y decisiones finales documentadas.
+
+**Cambio metodológico autorizado (2026-10-20, protocolo v1.3):** los 3 mejores trials de la etapa 1
+de cada sujeto (media de B2 y B4) se entrenan también en B1, B3 y B5 con el mismo contrato. La
+etapa 2, B y C heredan el LR/WD del finalista con mayor media de los cinco folds. No se crean
+trials ni cambia la guía de TPE; la búsqueda pasa de 270 a 297 entrenamientos.
 
 **Cambio metodológico autorizado (2026-10-18, protocolo v1.1):** se eliminó la etapa de QC con umbrales, `qc_decisions.json` y aprobación. El flujo obligatorio es **02 Preprocesamiento → 03 Verificación**; el EDA es opcional (actualización autorizada v1.2). La exclusión de canales es una lista fija en el YAML (ver reglas). Ver `docs/experimental_log.md` y `docs/channel_exclusion.md`.
 
@@ -57,7 +63,7 @@ experimental, que requiere aprobación V01–V14, 05/06 completos y decisiones f
 - Entrenar con AdamW sin scheduler; loss 0.5 MSE + 0.5(1-coseno temporal). Optuna maximiza `val_pearson_full` reconstruido con overlap-add.
 - Durante Optuna, todos los entrenamientos usan la duración fija que se apruebe más adelante y puntuan la **ultima época**, sin early stopping sobre el mismo fold puntuado. Guardar curvas por época para diagnóstico sin escoger el mejor pico a posteriori.
 - Selección final de época con validación interna de desarrollo; test solo una vez decidido todo. CCC, MSE y RMSE son métricas secundarias, NO objetivos multiobjetivo en la implementación principal.
-- Etapa 1: 20 trials x 2 folds (B2, B4) por sujeto, 2 hiperparametros. Etapa 2: 10 trials x 5 folds por sujeto, 3 hiperparametros; incluye arquitectura de referencia dentro de las 10 propuestas. 270 entrenamientos de búsqueda en total, sin incluir pilotos ni entrenamientos finales.
+- Etapa 1: 20 trials x 2 folds (B2, B4) por sujeto, 2 hiperparametros; después, los 3 mejores se reevalúan en B1, B3 y B5 y se elige el de mayor media de cinco folds (v1.3). Etapa 2: 10 trials x 5 folds por sujeto, 3 hiperparametros; incluye arquitectura de referencia dentro de las 10 propuestas. 297 entrenamientos de búsqueda en total (120 + 27 + 150), sin incluir pilotos ni entrenamientos finales.
 
 ## Reglas de código y seguridad
 

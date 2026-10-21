@@ -296,6 +296,57 @@ def _validate_training_and_metrics(training: dict, metrics: dict) -> None:
         raise ConfigError("metrics.degenerate_std_relative must be < 1")
 
 
+def _validate_optimization(optimization: dict, block_names: list[str], n_subjects: int) -> None:
+    """The stage-1 finalists are scored on the folds stage 1 left out; budgets must add up."""
+    first, second = optimization["stage1"], optimization["stage2"]
+    reevaluation = first["reevaluation"]
+    _positive_int(reevaluation["top_trials"], "optimization.stage1.reevaluation.top_trials")
+    if reevaluation["top_trials"] > first["trials_per_subject"]:
+        raise ConfigError("optimization.stage1.reevaluation.top_trials exceeds the stage-1 trials")
+    searched, added = first["validation_blocks"], reevaluation["validation_blocks"]
+    if (len(set(added)) != len(added) or set(added) & set(searched)
+            or sorted(searched + added) != sorted(block_names)
+            or sorted(second["validation_blocks"]) != sorted(block_names)):
+        raise ConfigError("optimization.stage1.reevaluation.validation_blocks must complete the five folds")
+    budgets = {"stage1_total_fits": n_subjects * first["trials_per_subject"] * len(searched),
+               "stage1_reevaluation_fits": n_subjects * reevaluation["top_trials"] * len(added),
+               "stage2_total_fits": n_subjects * second["trials_per_subject"] * len(second["validation_blocks"])}
+    budgets["combined_search_fits"] = sum(budgets.values())
+    if optimization["budgets"] != budgets:
+        raise ConfigError(f"optimization.budgets must match the configured trials and folds: {budgets}")
+
+
+def _validate_convergence(data: dict, subjects: list[str]) -> None:
+    """Diagnostic runs stay inside the search space; candidates end before the horizon."""
+    study, name = data["convergence_study"], "convergence_study"
+    if not study["subjects"] or len(set(study["subjects"])) != len(study["subjects"]) \
+            or not set(study["subjects"]) <= set(subjects):
+        raise ConfigError(f"{name}.subjects: distinct project subjects expected")
+    if study["validation_block"] not in data["validation"]["block_names"]:
+        raise ConfigError(f"{name}.validation_block: expected one of the five blocks")
+    for key in ("epochs", "second_seed_offset"):
+        _positive_int(study[key], f"{name}.{key}")
+    candidates, horizon = study["candidate_epochs"], study["horizon_epochs"]
+    if (not candidates or any(type(e) is not int or e < 1 for e in candidates) or candidates != sorted(set(candidates))
+            or not isinstance(horizon, list) or len(horizon) != 2 or any(type(e) is not int for e in horizon)
+            or not candidates[-1] < horizon[0] <= horizon[1] == study["epochs"]):
+        raise ConfigError(f"{name}: increasing candidate_epochs must end before horizon_epochs, which ends at epochs")
+    training, search = data["training"], data["optimization"]["stage1"]["search"]["learning_rate"]
+    rates = study["learning_rates"]
+    if (not rates or len(set(rates)) != len(rates) or training["reference_learning_rate"] in rates
+            or any(isinstance(r, bool) or not isinstance(r, float) or not search["min"] <= r <= search["max"]
+                   for r in rates)):
+        raise ConfigError(f"{name}.learning_rates: distinct non-reference values inside the stage-1 range")
+    space, ref = data["optimization"]["stage2"]["search"], data["model"]["reference"]
+    reference = {"kernel_size": ref["encoder_kernels"][-1], "encoder_levels": ref["encoder_levels"],
+                 "base_filters": ref["base_filters"]}
+    architectures = study["architectures"]
+    if (not architectures or reference in architectures
+            or any(a in architectures[:i] for i, a in enumerate(architectures))
+            or any(set(a) != set(reference) or any(a[k] not in space[k] for k in a) for a in architectures)):
+        raise ConfigError(f"{name}.architectures: distinct non-reference stage-2 architectures expected")
+
+
 def _validate_verification(verification: dict) -> None:
     if verification["required_test_ids"] != VERIFICATION_IDS:
         raise ConfigError("verification.required_test_ids must list V01-V14")
@@ -347,6 +398,8 @@ def load_config(path: str | Path) -> ExperimentConfig:
         _validate_scaling(data["scaling"])
         _validate_model(data["model"], data["signal"])
         _validate_training_and_metrics(data["training"], data["metrics"])
+        _validate_optimization(data["optimization"], data["validation"]["block_names"], len(subjects))
+        _validate_convergence(data, subjects)
         _validate_verification(data["verification"])
     except (KeyError, TypeError) as exc:
         raise ConfigError(f"Missing or malformed configuration: {exc}") from exc

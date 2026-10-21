@@ -232,6 +232,18 @@ metrics:
   metrics_include_train_and_val_curves: true
   selection_is_multiobjective: false
 
+convergence_study:  # Autorizado 2026-10-20: diagnostico para decidir training.search_epochs; no es busqueda
+  subjects: [S1, S2, S3]
+  validation_block: B2
+  epochs: 60
+  candidate_epochs: [30, 40, 50]
+  horizon_epochs: [56, 60]  # desempeno de referencia: media de estas epocas, ambas incluidas
+  second_seed_offset: 1000  # semilla B de la referencia = semilla del fold + este valor
+  learning_rates: [3.0e-5, 2.5e-4, 7.5e-4]  # con la arquitectura de referencia, ademas de su LR
+  architectures:  # con el LR de referencia, ademas de la arquitectura de referencia
+    - {kernel_size: 3, encoder_levels: 3, base_filters: 32}
+    - {kernel_size: 7, encoder_levels: 5, base_filters: 96}
+
 optimization:
   algorithm: optuna_tpe
   study_direction: maximize
@@ -240,6 +252,9 @@ optimization:
     trials_per_subject: 20
     validation_blocks: [B2, B4]
     n_startup_trials: 5
+    reevaluation:  # Autorizado 2026-10-20: los mejores trials se puntuan tambien en los folds restantes
+      top_trials: 3
+      validation_blocks: [B1, B3, B5]  # LR/WD de B, C y etapa 2 = mayor media de los cinco folds
     search:
       learning_rate: {type: float_log, min: 1.0e-5, max: 1.0e-3}
       weight_decay: {type: float_log, min: 1.0e-6, max: 1.0e-2}
@@ -260,8 +275,9 @@ optimization:
       base_filters: 64
   budgets:
     stage1_total_fits: 120
+    stage1_reevaluation_fits: 27
     stage2_total_fits: 150
-    combined_search_fits: 270
+    combined_search_fits: 297
 
 verification:
   support_tolerance: 1.0e-6  # Tolerancia del soporte medido, independiente del EDA

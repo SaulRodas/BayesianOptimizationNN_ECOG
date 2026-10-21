@@ -50,10 +50,10 @@ def final_contract(config):
 
 def selected_variants(config, drive_root, subject):
     """Read both completed studies for this subject/pipeline; never launch a trial."""
-    from .optimization import search_session, completed_selection
+    from .optimization import search_session, completed_selection, stage1_selection
     from .io import StoreError
     with search_session(config, drive_root, subject, "stage1", existing_only=True) as session:
-        first = completed_selection(session)
+        first = stage1_selection(session)
     with search_session(config, drive_root, subject, "stage2", existing_only=True) as session:
         second = completed_selection(session)
         if session.contract["parent"] != first:

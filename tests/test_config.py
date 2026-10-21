@@ -99,6 +99,22 @@ def test_antialias_must_respect_target_nyquist(config, tmp_path):
         load_config(write(tmp_path, data))
 
 
+@pytest.mark.parametrize("change", [
+    lambda o: o["stage1"]["reevaluation"].update(validation_blocks=["B1", "B2", "B5"]),  # overlaps stage 1
+    lambda o: o["stage1"]["reevaluation"].update(validation_blocks=["B1", "B3"]),        # leaves B5 out
+    lambda o: o["stage1"]["reevaluation"].update(top_trials=21),
+    lambda o: o["stage1"]["reevaluation"].update(top_trials=0),
+    lambda o: o["budgets"].update(combined_search_fits=270)])
+def test_stage1_reevaluation_completes_five_folds_within_budget(config, tmp_path, change):
+    reevaluation = config.data["optimization"]["stage1"]["reevaluation"]
+    assert reevaluation == {"top_trials": 3, "validation_blocks": ["B1", "B3", "B5"]}
+    assert config.data["optimization"]["budgets"]["combined_search_fits"] == 297
+    data = deepcopy(config.data)
+    change(data["optimization"])
+    with pytest.raises(ConfigError, match="optimization"):
+        load_config(write(tmp_path, data))
+
+
 def test_selected_pipeline_id(config, tmp_path):
     assert "reference_run" not in config.data["channels"]
     data = deepcopy(config.data)

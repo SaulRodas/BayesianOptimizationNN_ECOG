@@ -3,10 +3,12 @@
 **Proyecto:** Decodificación continua de la flexión de cinco dedos mediante señales electrocorticográficas (ECoG) y redes encoder–decoder 1D  
 **Fuente de datos:** BCI Competition IV — Dataset 4  
 **Sujetos:** S1, S2 y S3  
-**Versión documental:** 1.2 — EDA opcional e identidad compartida del pipeline
-**Fecha:** 18 de octubre de 2026  
+**Versión documental:** 1.3 — Reevaluación de los finalistas de la etapa 1
+**Fecha:** 20 de octubre de 2026  
 **Entorno previsto:** Python, PyTorch, MNE-Python, scikit-learn, Optuna y Google Colab Pro  
 **Estado:** diseño de implementación; pendiente de verificación técnica integral y de definición posterior del número de épocas.
+
+> **Cambio autorizado v1.3 (2026-10-20).** Por decisión de la persona usuaria, los 3 mejores trials de la etapa 1 de cada sujeto (media de B2 y B4) se entrenan también en B1, B3 y B5, con el mismo contrato. El learning rate y weight decay que heredan la etapa 2 y las variantes B y C son los del finalista con mayor media de los cinco folds. La búsqueda TPE, sus 20 trials y la etapa 2 no cambian; el presupuesto de búsqueda pasa de 270 a 297 entrenamientos (§10.2 y §10.4). Motivo: el par de la etapa 1 se arrastra a todo lo demás, y elegirlo con solo dos folds favorece al ganador por azar.
 
 > **Cambio autorizado v1.2 (2026-10-18).** El EDA es descriptivo y opcional: no es precondición del preprocesamiento ni de la verificación. El flujo obligatorio comienza en 02 → 03. La exclusión fija y las decisiones científicas no cambian. El 02 publica un `pipeline_id` que el 03 y las etapas posteriores conservan; los hashes de código/configuración completa describen la ejecución, no crean otra identidad al cambiar de notebook.
 
@@ -516,6 +518,8 @@ Para cerrar esta decisión:
 5. Seleccionar y documentar un **mismo `SEARCH_EPOCHS`** para todas las configuraciones de ambas etapas, con justificación de costo y convergencia.
 6. Definir separadamente `FINAL_MAX_EPOCHS` y la política de Early Stopping final.
 
+**Diagnóstico autorizado (2026-10-20, `convergence_study` del YAML).** Por sujeto (S1, S2, S3), en el fold B2 y hasta un horizonte de 60 épocas, se entrenan siete configuraciones con el batch y las funciones de la búsqueda: la referencia con dos semillas; los learning rates 3e-5, 2.5e-4 y 7.5e-4 con la arquitectura de referencia; y las arquitecturas k3-L3-f32 y k7-L5-f96 con el LR de referencia (weight decay de referencia en todas). No son trials, no cuentan en el presupuesto de búsqueda, no guían ni acotan la búsqueda y se ejecutan en la misma GPU que ella. Regla, fijada antes de ver resultados: por sujeto, el horizonte es la media de las épocas 56–60 y δ es el mayor entre la diferencia de las dos semillas de la referencia en el horizonte y la variación entre épocas de cada semilla en ese tramo. Por grupo (learning rates; arquitecturas) y candidato E ∈ {30, 40, 50}, gana la configuración con mejor Pearson en la época E y su pérdida es el mejor horizonte del grupo menos el horizonte del ganador. Se propone el menor E con pérdida ≤ δ en todos los sujetos y grupos; si ninguno cumple, el mayor candidato con la limitación documentada. Las inversiones de orden se informan sin decidir. Las curvas sirven además como evidencia para `FINAL_MAX_EPOCHS`, que se decide aparte.
+
 **No adoptar automáticamente 20, 30, 40 ni ninguna otra cifra** sin finalizar este análisis. El valor aprobado se añadirá a `configs/experiment_config.yaml`; esta decisión **no reabre** el diseño de preprocesamiento ya verificado.
 
 ---
@@ -546,8 +550,10 @@ Optuna se configurará con almacenamiento persistente por sujeto y etapa, un gen
 | Optimizador bayesiano | `TPESampler` con semilla documentada y `n_startup_trials=5` |
 | Entrenamiento | `SEARCH_EPOCHS` fijas, sin Early Stopping |
 | Objetivo | Media del `val_pearson_full` de ambos folds |
+| Reevaluación (v1.3) | Los **3 mejores** trials por ese objetivo (empate: el trial anterior) se entrenan también en **B1, B3 y B5**, con la arquitectura de referencia, su LR/WD, la semilla del fold y las mismas épocas fijas |
+| Selección | Finalista con mayor media del `val_pearson_full` de los **cinco** folds (empate: el mejor de la etapa 1) |
 
-Presupuesto: `20 × 2 × 3 = 120` entrenamientos.
+Presupuesto: `20 × 2 × 3 = 120` entrenamientos de búsqueda más `3 × 3 × 3 = 27` de reevaluación. La reevaluación no crea trials ni modifica la guía de TPE; sus resultados se guardan en el mismo estudio persistente.
 
 **Modelo base A:** utilizar la arquitectura de referencia con `learning_rate = 8.42e-5` y `weight_decay = 1e-4` como valores de referencia fijados de antemano. **Modelo B:** seleccionar por sujeto el mejor par de la etapa 1. La evaluación final controlada de ambos se realizará con el procedimiento común del apartado 11.
 
@@ -574,8 +580,9 @@ Presupuesto: `10 × 5 × 3 = 150` entrenamientos.
 | Fase | Entrenamientos por sujeto | Total de tres sujetos |
 |---|---:|---:|
 | Etapa 1 | 40 | 120 |
+| Reevaluación de finalistas de la etapa 1 (v1.3) | 9 | 27 |
 | Etapa 2 | 50 | 150 |
-| **Total de búsqueda** | **90** | **270** |
+| **Total de búsqueda** | **99** | **297** |
 
 Este presupuesto **excluye** EDA, verificación, evaluación de factibilidad, entrenamientos finales, repeticiones y reintentos por fallos de infraestructura. Una rejilla de las 27 arquitecturas con cinco folds necesitaría 135 entrenamientos por sujeto; el presupuesto TPE de diez trials no garantiza localizar el óptimo global.
 
@@ -594,7 +601,7 @@ El archivo se actualiza antes de entrenar una propuesta y al completar cada fold
 Cada fold guarda además su última época completa en Drive, junto con AdamW, RNG e historial.
 Al reconectar se recupera el trial RUNNING y se conservan los folds terminados. Los estados FAIL
 se informan y detienen el estudio; no se agregan propuestas ni reintentos automáticamente.
-La etapa 2 exige los 20 trials completos de la etapa 1 para ese mismo sujeto y contrato de ejecución.
+La etapa 2 exige los 20 trials completos de la etapa 1 y la reevaluación completa de sus finalistas para ese mismo sujeto y contrato de ejecución. Un fallo durante la reevaluación queda registrado y la detiene para diagnóstico, sin reemplazar al finalista.
 
 ---
 
@@ -603,7 +610,7 @@ La etapa 2 exige los 20 trials completos de la etapa 1 para ese mismo sujeto y c
 ### 11.1. Variantes por sujeto
 
 - **A:** arquitectura y hiperparámetros de referencia.
-- **B:** arquitectura de referencia y mejores parámetros de entrenamiento seleccionados.
+- **B:** arquitectura de referencia y mejores parámetros de entrenamiento seleccionados (finalista de la etapa 1 con mayor media de los cinco folds).
 - **C:** mejores parámetros de entrenamiento seleccionados y arquitectura elegida en etapa 2.
 
 Todos se entrenan de nuevo desde cero, con el mismo pipeline, política de semillas y procedimiento de selección de duración final.
@@ -695,7 +702,7 @@ Cada archivo de métricas por época debe registrar, al menos: `pipeline_id`, `r
 | **3** | Verificación técnica integral | Informe de las 14 pruebas | **Todas aprobadas** |
 | **4** | Medición de factibilidad en Colab Pro | Perfil de GPU, memoria, tiempo y batch común | Recursos viables |
 | **5** | Definición del presupuesto de épocas | `SEARCH_EPOCHS` y política final registrados | Decisión documentada |
-| **6** | Optimización TPE, etapa 1 | 20 trials × 2 folds × 3 sujetos | Parámetros de entrenamiento seleccionados |
+| **6** | Optimización TPE, etapa 1 | 20 trials × 2 folds × 3 sujetos, más 3 finalistas × 3 folds × 3 sujetos | Parámetros de entrenamiento seleccionados con cinco folds |
 | **7** | Optimización TPE, etapa 2 | 10 trials × 5 folds × 3 sujetos | Arquitecturas seleccionadas |
 | **8** | Entrenamiento y evaluación final | Resultados A/B/C y figuras | Evaluación independiente completada |
 | **9** | Documentación científica | Tablas, discusión y limitaciones | Resultados reproducibles y auditables |

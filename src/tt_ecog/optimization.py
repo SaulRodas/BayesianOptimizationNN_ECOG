@@ -76,7 +76,7 @@ def search_session(config, drive_root, subject, stage, *, existing_only=False):
     parent = None
     if stage == "stage2":
         with search_session(config, drive_root, subject, "stage1", existing_only=True) as previous:
-            parent = completed_selection(previous)
+            parent = stage1_selection(previous)
     contract = study_contract(config, subject, stage, parent)
     folder = config.path(drive_root, "optimization_dir") / contract["pipeline_id"] / subject / stage
     if existing_only and not (folder / "study.zip").is_file():
@@ -169,7 +169,7 @@ def trial_training_run(session, trial, fold, arch, lr, weight_decay, device):
     return output, parameters
 
 
-def record_fold(session, trial, val_block, history, parameters, device_metadata):
+def _fold_record(session, history, parameters, device_metadata):
     epochs = session.contract["epochs"]
     if [row["epoch"] for row in history] != list(range(1, epochs + 1)):
         raise ValueError("A fold must finish the fixed epoch budget before scoring")
@@ -178,11 +178,15 @@ def record_fold(session, trial, val_block, history, parameters, device_metadata)
     fingers = {k: v for k, v in last.items() if k.startswith("pearson_")}
     if len(fingers) != 5 or not all(math.isfinite(v) for v in [score, *fingers.values()]):
         raise ValueError("Nonfinite or incomplete fold Pearson")
+    return {"val_pearson_full": score, "pearson_per_finger": fingers,
+            "epoch": epochs, "seed": parameters["seed"], "run_id": parameters["run_id"],
+            "elapsed_seconds": sum(row["elapsed_seconds"] for row in history),
+            "device": device_metadata}
+
+
+def record_fold(session, trial, val_block, history, parameters, device_metadata):
     folds = trial.user_attrs.get("folds", {})
-    folds[val_block] = {"val_pearson_full": score, "pearson_per_finger": fingers,
-                        "epoch": epochs, "seed": parameters["seed"], "run_id": parameters["run_id"],
-                        "elapsed_seconds": sum(row["elapsed_seconds"] for row in history),
-                        "device": device_metadata}
+    folds[val_block] = _fold_record(session, history, parameters, device_metadata)
     trial.set_user_attr("folds", folds)
 
 
@@ -210,10 +214,116 @@ def fail_trial(session, trial, exc):
     session.save()
 
 
-def completed_selection(session):
+def _complete_trials(session):
     trials = session.study.get_trials()
     budget = session.contract["policy"]["trials_per_subject"]
     if len(trials) != budget or any(t.state != TrialState.COMPLETE for t in trials):
         raise StoreError("All budgeted trials must complete before selecting the next stage")
+    return trials
+
+
+def completed_selection(session):
+    """Best trial by the objective of its own folds; stage 2 hands this to C."""
+    _complete_trials(session)
     best = session.study.best_trial
     return {"trial": best.number, "parameters": best.params, "value": best.value}
+
+
+# --------------------------------------------------------------------------- stage-1 finalists
+
+def reevaluation_candidates(session):
+    """Best stage-1 trials by their B2/B4 objective; the earlier trial wins a tie."""
+    if session.contract["stage"] != "stage1":
+        raise ValueError("Only stage 1 re-evaluates its finalists")
+    top = session.contract["policy"]["reevaluation"]["top_trials"]
+    return sorted(_complete_trials(session), key=lambda t: (-t.value, t.number))[:top]
+
+
+def reevaluation_state(session):
+    """Finalists, run locations and fold results, kept in the stage-1 study archive.
+
+    The finalists are fixed once the study is complete; a recorded failure stops the
+    re-evaluation for diagnosis, like a failed trial, without automatic replacement.
+    """
+    candidates = [t.number for t in reevaluation_candidates(session)]
+    state = session.study.user_attrs.get("reevaluation")
+    if state is None:
+        state = {"candidates": candidates, "runs": {}, "folds": {}, "failure": None}
+        session.study.set_user_attr("reevaluation", state)
+        session.save()
+    if state["candidates"] != candidates:
+        raise StoreError("Stage-1 finalists changed after the study was complete")
+    if state["failure"]:
+        raise StoreError("Re-evaluation failed; diagnose and document recovery before continuing: "
+                         + state["failure"])
+    return state
+
+
+def reevaluation_training_run(session, trial, fold, device):
+    """Same contract as a stage-1 fold: reference U-Net, the finalist's LR/WD, fold seed and epochs."""
+    contract = session.contract
+    state = reevaluation_state(session)
+    if (trial.number not in state["candidates"] or fold.subject != contract["subject"]
+            or fold.val_block not in contract["policy"]["reevaluation"]["validation_blocks"]):
+        raise StoreError("Only the stage-1 finalists are re-evaluated, on the folds stage 1 left out")
+    arch = reference_architecture(session.config)
+    parameters = {"purpose": "optuna_reevaluation", "stage": contract["stage"],
+                  "study": session.study.study_name, "trial": trial.number, "architecture": arch.key,
+                  "seed": fold_seed(session.config, fold.subject, fold.val_block),
+                  "batch_size": contract["batch_size"], "epochs": contract["epochs"],
+                  "lr": trial.params["learning_rate"], "weight_decay": trial.params["weight_decay"]}
+    storage = session.config.storage_root(session.drive_root)
+    runs = state["runs"].setdefault(str(trial.number), {})
+    if fold.val_block in runs:
+        output = inside(storage, runs[fold.val_block])
+        recorded = read_json(output / "config.json")["run"]
+        if any(recorded.get(key) != value for key, value in parameters.items()):
+            raise StoreError("Stored re-evaluation run differs from the current finalist")
+        return output, recorded, arch
+    output, parameters = start_training_run(session.config, session.drive_root, fold, parameters, device)
+    runs[fold.val_block] = output.relative_to(storage).as_posix()
+    session.study.set_user_attr("reevaluation", state)
+    session.save()  # Publish the run location before the first optimizer update.
+    return output, parameters, arch
+
+
+def record_reevaluation(session, trial, val_block, history, parameters, device_metadata):
+    state = reevaluation_state(session)
+    state["folds"].setdefault(str(trial.number), {})[val_block] = _fold_record(
+        session, history, parameters, device_metadata)
+    session.study.set_user_attr("reevaluation", state)
+
+
+def fail_reevaluation(session, exc):
+    state = session.study.user_attrs.get("reevaluation")
+    if state is None or state["failure"]:
+        return  # Nothing was trained yet, or keep the original diagnosis.
+    state["failure"] = f"{type(exc).__name__}: {exc}"
+    session.study.set_user_attr("reevaluation", state)
+    session.save()
+
+
+def stage1_selection(session):
+    """LR/WD inherited by stage 2, B and C: best five-fold mean among the finalists.
+
+    The search folds come from each trial and the others from its re-evaluation; nothing is
+    retrained here. A tie keeps the finalist that stage 1 ranked higher.
+    """
+    candidates = reevaluation_candidates(session)
+    state = session.study.user_attrs.get("reevaluation") or {}
+    if state.get("failure"):
+        raise StoreError("Re-evaluation failed: " + state["failure"])
+    policy = session.contract["policy"]
+    added = policy["reevaluation"]["validation_blocks"]
+    finalists = []
+    for trial in candidates:
+        extra = state.get("folds", {}).get(str(trial.number), {})
+        if set(extra) != set(added):
+            raise StoreError("Re-evaluate every stage-1 finalist on " + ", ".join(added) + " before selecting")
+        scores = {block: trial.user_attrs["folds"][block]["val_pearson_full"] for block in policy["validation_blocks"]}
+        scores.update({block: extra[block]["val_pearson_full"] for block in added})
+        finalists.append({"trial": trial.number, "parameters": trial.params, "search_value": trial.value,
+                          "value": sum(scores.values()) / len(scores), "fold_scores": scores})
+    best = max(finalists, key=lambda finalist: finalist["value"])
+    return {"trial": best["trial"], "parameters": best["parameters"], "value": best["value"],
+            "search_value": best["search_value"], "finalists": finalists}

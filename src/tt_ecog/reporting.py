@@ -265,7 +265,7 @@ def show(artifacts: list[Artifact], max_table_rows: int = 20) -> None:
 def report_search(session):
     """Export readable results; the atomic study archive remains the recovery source."""
     from .io import write_manifest
-    from .optimization import completed_selection
+    from .optimization import completed_selection, stage1_selection
     from .io import StoreError
     folder = session.archive.folder
     trials = session.study.get_trials()
@@ -278,7 +278,18 @@ def report_search(session):
     except StoreError:
         selection = None
     status = "COMPLETE" if selection is not None else "INCOMPLETE"
-    summary = {**session.contract, "status": status, "selection": selection,
+    stage1 = {}
+    if session.contract["stage"] == "stage1":
+        # Stage 1 hands on the finalist with the best five-fold mean, not its best B2/B4 trial.
+        reevaluation = session.study.user_attrs.get("reevaluation")
+        stage1 = {"best_search_trial": selection, "reevaluation": reevaluation}
+        try:
+            selection = stage1_selection(session)
+        except StoreError:
+            selection = None
+            if status == "COMPLETE":
+                status = "REEVALUATION_FAILED" if (reevaluation or {}).get("failure") else "REEVALUATION_PENDING"
+    summary = {**session.contract, "status": status, "selection": selection, **stage1,
                "trials_recorded": len(trials), "test_accessed": False,
                "updated_at_utc": utc_now()}
     write_json(folder / "study_summary.json", summary)

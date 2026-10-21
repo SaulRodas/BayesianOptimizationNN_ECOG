@@ -1,6 +1,6 @@
 # Inicio de trabajo — TT ECoG
 
-Leer `AGENTS.md`, el protocolo v1.2, los requisitos de verificación, el contrato del dataset y el YAML. El README principal describe comandos y responsabilidades.
+Leer `AGENTS.md`, el protocolo v1.3, los requisitos de verificación, el contrato del dataset y el YAML. El README principal describe comandos y responsabilidades.
 
 ## Estado de implementación
 

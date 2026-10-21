@@ -1,6 +1,6 @@
 # TT ECoG
 
-Decodificación continua de cinco dedos con ECoG y U-Net 1D. Metodología: [protocolo v1.2](docs/protocolo_implementacion.md). Configuración única: `configs/experiment_config.yaml`.
+Decodificación continua de cinco dedos con ECoG y U-Net 1D. Metodología: [protocolo v1.3](docs/protocolo_implementacion.md). Configuración única: `configs/experiment_config.yaml`.
 
 ## Ejecutar en VS Code con kernel Colab
 
@@ -75,10 +75,18 @@ Si falta memoria, cambiar el candidato de batch y repetir; no hay reducción aut
 El piloto guarda curvas por época y `checkpoint/last.pt` en `results/training/<sujeto>/<run_id>/`,
 con el mismo `pipeline_id`. La prueba de recursos no demuestra convergencia ni certifica las 27 arquitecturas.
 El tiempo inicial por época es una estimación; el piloto registra train y validación medidos.
+Después, la sección `convergence` del 04 ejecuta el diagnóstico de `convergence_study`: 7 corridas
+por sujeto hasta 60 épocas, retomables, y la regla del protocolo §9.2 propone el menor de 30/40/50
+cuyo ganador pierde a lo más el ruido entre semillas. Resultados en
+`results/training/convergence/<pipeline_id>/batch_<b>/` (`registry.json`, `convergence_decision.json`,
+curvas); el YAML no se modifica.
 Optuna está implementado en 05/06 y reutiliza estas funciones. El 04 no lo inicia. Se conserva la
 última época, sin early stopping ni pruning; el objetivo es la media del Pearson reconstruido de
-todos los folds. Etapa 1: 20 trials × B2/B4 por sujeto. Etapa 2: 10 trials × cinco folds por sujeto,
+todos los folds. Etapa 1: 20 trials × B2/B4 por sujeto; después, los 3 mejores se reevalúan en
+B1/B3/B5 y la etapa 2, B y C heredan el LR/WD con mayor media de cinco folds (v1.3).
+Etapa 2: 10 trials × cinco folds por sujeto,
 incluyendo la arquitectura de referencia dentro de las diez propuestas. Las repeticiones cuentan.
+En total, 297 entrenamientos de búsqueda.
 
 Los estudios se guardan en `results/optimization/<pipeline_id>/<sujeto>/stage1|stage2/`:
 `study.zip` permite recuperar base y sampler juntos; `trials.csv`, `trials.json` y
@@ -87,7 +95,8 @@ los reportes y checkpoints en `results/training/`, enlazados desde cada trial. S
 localmente y publica una copia completa en Drive; usar **un solo runtime por estudio**.
 Volver a ejecutar recupera el trial y la última época completa, sin ampliar el presupuesto.
 Un FAIL detiene el estudio para diagnóstico; no se reemplaza automáticamente. La etapa 2 requiere
-todos los trials de etapa 1 completos para el mismo sujeto, pipeline, batch y épocas.
+todos los trials de etapa 1 y la reevaluación de sus finalistas completos para el mismo sujeto,
+pipeline, batch y épocas; la reevaluación vive en el mismo `study.zip` de la etapa 1.
 Conservar la versión de Optuna al recuperar el sampler y cargar solo archivos propios.
 La persistencia del sampler sigue la [guía oficial de Optuna](https://optuna.readthedocs.io/en/v4.5.0/tutorial/20_recipes/001_rdb.html).
 
