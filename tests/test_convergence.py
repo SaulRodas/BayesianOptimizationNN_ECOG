@@ -180,7 +180,7 @@ def test_notebook_diagnostic_trains_resumes_and_decides(config_copy, tiny_fold, 
     assert len(read_json(folder / "registry.json")) == 7 and (folder / "convergence_curves.png").is_file()
     assert decision["candidate_epochs"] == [1, 2] and len(decision["rows"]) == 2 * 2
     assert decision["batch_size"] == 2 and decision["pipeline_id"] == tiny_fold.pipeline_id
-    assert load_config(config_copy).data["training"]["search_epochs"] is None
+    assert load_config(config_copy).data["training"]["search_epochs"] == data["training"]["search_epochs"]
 
     ns = namespace()
     def no_more_training(*args, **kwargs):

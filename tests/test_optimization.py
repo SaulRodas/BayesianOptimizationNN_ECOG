@@ -62,7 +62,8 @@ def fill_reevaluation(session, score=lambda trial, block: 0.2):
 
 
 def test_pending_values_do_not_use_pilot_candidates(config):
-    config.data["training"]["batch_size"] = None  # pending, independent of the recorded decision
+    # Pending, independent of the decisions recorded in the YAML.
+    config.data["training"].update(batch_size=None, search_epochs=None)
     with pytest.raises(ConfigError, match="batch_size"):
         search_budget(config)
     config.data["training"]["batch_size"] = 2

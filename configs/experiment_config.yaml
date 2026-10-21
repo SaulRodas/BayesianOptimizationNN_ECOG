@@ -206,7 +206,7 @@ training:
     eps: 1.0e-8
   batch_size: 128  # Decidido 2026-10-21: cabe en T4/L4/A100 (pico <= 1.6 GB); ver bitacora
   batch_size_initial_candidate: 128
-  search_epochs: null  # DECISION POSTERIOR tras estudio de convergencia
+  search_epochs: 50  # Decidido 2026-10-21 con el diagnostico de convergencia (A100); ver bitacora
   search_epochs_candidate: 50  # Propuesta de la persona usuaria; piloto, no aprobacion automatica
   profile_warmup_steps: 2
   profile_measured_steps: 3

@@ -276,7 +276,7 @@ def test_notebook_training_cells_execute_on_synthetic_cpu_data(config_copy, tiny
     assert summary["checkpoint_selection"] == "last_completed_epoch"
     assert (namespace["output"] / "learning_curves.png").is_file()
     assert (namespace["output"] / "checkpoint/last.pt").is_file()
-    assert load_config(config_copy).data["training"]["search_epochs"] is None
+    assert load_config(config_copy).data["training"]["search_epochs"] == data["training"]["search_epochs"]
 
 
 @pytest.mark.parametrize("field,value", [("search_epochs_candidate", 0), ("batch_size", -1),
