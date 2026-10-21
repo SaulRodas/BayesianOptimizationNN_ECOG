@@ -10,11 +10,11 @@ default initialisation for every variant.
 """
 
 from dataclasses import dataclass
+from functools import lru_cache
 from itertools import product
 
 import torch
 from torch import nn
-import torch.nn.functional as F
 
 from .config import ConfigError, ExperimentConfig
 
@@ -64,6 +64,29 @@ def search_space(config: ExperimentConfig) -> list[Architecture]:
             for k, levels, f in product(search["kernel_size"], search["encoder_levels"], search["base_filters"])]
 
 
+@lru_cache(maxsize=64)
+def _linear_weights(length: int, size: int, dtype: torch.dtype, device: torch.device):
+    # area_pixel_compute_source_index of PyTorch's upsample_linear1d, align_corners=False.
+    scale = torch.tensor(length, dtype=dtype) / size
+    position = ((torch.arange(size, dtype=dtype) + 0.5) * scale - 0.5).clamp_min(0)
+    left = position.floor().long()
+    right = (left + 1).clamp_max(length - 1)
+    weight = position - left
+    return left.to(device), right.to(device), weight.to(device)
+
+
+def linear_upsample(x: torch.Tensor, size: int) -> torch.Tensor:
+    """``F.interpolate(x, size, mode="linear", align_corners=False)`` on the last axis.
+
+    Same formula, written as gathers: PyTorch's CUDA kernel parallelises only over
+    output positions and loops over batch and channels, which took ~96 % of a step.
+    """
+    compute = torch.promote_types(x.dtype, torch.float32)
+    left, right, weight = _linear_weights(x.shape[-1], size, compute, x.device)
+    out = x[..., left].to(compute) * (1 - weight) + x[..., right].to(compute) * weight
+    return out.to(x.dtype)
+
+
 class ConvBlock(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, dilation: int, dropout: float):
         super().__init__()
@@ -101,7 +124,7 @@ class UNet1D(nn.Module):
             skips.append(x)
             x = self.pool(block(x))
         for block, skip in zip(self.decoder, reversed(skips)):
-            x = F.interpolate(x, size=skip.shape[-1], mode="linear", align_corners=False)
+            x = linear_upsample(x, skip.shape[-1])
             x = torch.cat([block(x), skip], dim=1)
         return self.head(x)
 

@@ -1,8 +1,11 @@
 import pytest
 import torch
+import torch.nn.functional as F
 
+from tt_ecog import model as unet
 from tt_ecog.losses import make_loss
-from tt_ecog.model import UNet1D, architecture, build_model, count_parameters, reference_architecture, search_space
+from tt_ecog.model import (UNet1D, architecture, build_model, count_parameters, linear_upsample,
+                           reference_architecture, search_space)
 
 pytestmark = pytest.mark.verification("V13")
 
@@ -73,6 +76,40 @@ def test_wrong_input_shape_is_rejected(config):
     for shape in ((2, 45, 40, 256), (2, 46, 39, 256), (46, 40, 256)):
         with pytest.raises(ValueError):
             model(torch.randn(*shape))
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64])
+@pytest.mark.parametrize("length,size", [(8, 16), (16, 32), (128, 256), (7, 15), (100, 255),
+                                         (150, 300), (5, 5), (1, 6), (10, 4)])
+def test_linear_upsample_equals_torch_interpolate(length, size, dtype):
+    torch.manual_seed(length * 1000 + size)
+    x = torch.randn(3, 17, length, dtype=dtype, requires_grad=True)
+    x_ref = x.detach().clone().requires_grad_(True)
+    out, expected = linear_upsample(x, size), F.interpolate(x_ref, size=size, mode="linear", align_corners=False)
+    assert out.dtype == expected.dtype and out.shape == expected.shape == (3, 17, size)
+    torch.testing.assert_close(out, expected)
+    grad = torch.randn_like(out)
+    out.backward(grad)
+    expected.backward(grad)
+    torch.testing.assert_close(x.grad, x_ref.grad)
+
+
+def test_decoder_matches_the_torch_interpolation_it_replaces(config, monkeypatch):
+    torch.manual_seed(3)
+    model = build_model(config, 46).eval()
+    x = torch.randn(2, 46, 40, 256, requires_grad=True)
+    out = model(x)
+    out.sum().backward()
+    gradients = [p.grad.clone() for p in model.parameters()] + [x.grad.clone()]
+    model.zero_grad()
+    x.grad = None
+    monkeypatch.setattr(unet, "linear_upsample",
+                        lambda t, size: F.interpolate(t, size=size, mode="linear", align_corners=False))
+    reference = model(x)
+    reference.sum().backward()
+    torch.testing.assert_close(out, reference)
+    for mine, theirs in zip(gradients, [p.grad for p in model.parameters()] + [x.grad]):
+        torch.testing.assert_close(mine, theirs)
 
 
 def test_same_seed_same_initialisation(config):
