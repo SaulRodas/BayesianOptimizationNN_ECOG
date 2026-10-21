@@ -140,7 +140,7 @@ def test_notebook_diagnostic_trains_resumes_and_decides(config_copy, tiny_fold, 
     """Executes the real 04 cells and U-Nets; only data admission and the GPU are synthetic."""
     data = yaml.safe_load(config_copy.read_text(encoding="utf8"))
     data["convergence_study"].update(subjects=["S1"], epochs=3, candidate_epochs=[1, 2], horizon_epochs=[3, 3])
-    data["training"].update(batch_size_initial_candidate=2, loader_workers=0)
+    data["training"].update(batch_size=2, loader_workers=0)
     config_copy.write_text(yaml.safe_dump(data), encoding="utf8")
     notebook = nbformat.read(ROOT / "notebooks/04_entrenamiento.ipynb", 4)
     nbformat.validate(notebook)

@@ -36,22 +36,77 @@ def fold_seed(config, subject, val_block):
     return config.data["project"]["seed_base"] + subjects.index(subject) * len(blocks) + blocks.index(val_block)
 
 
-def make_loaders(fold, batch_size: int, seed: int, workers: int = 0):
-    """Batches and their order depend only on ``seed``. ``workers`` (training.loader_workers)
-    only assembles training batches in parallel and pins them for an asynchronous GPU copy."""
+class DeviceWindows:
+    """Training batches cut from the fold's blocks, which stay on ``device`` for the whole run.
+
+    Same windows, batches and order as ``DataLoader(FoldWindows(fold, "train"), shuffle=True)``
+    with the same generator: a DataLoader over window numbers keeps PyTorch's sampler and its
+    use of the generator, so checkpoints save and restore the same state. Only the per-batch
+    host assembly and copy (~335 MB at batch 128) disappear.
+    """
+
+    def __init__(self, fold, batch_size: int, generator: torch.Generator, device):
+        self.dataset, self.batch_size, self.generator = FoldWindows(fold, "train"), batch_size, generator
+        self.device = torch.device(device)
+        self._numbers = DataLoader(range(len(self.dataset)), batch_size=batch_size, shuffle=True,
+                                   generator=generator, num_workers=0, drop_last=False)
+        self._windows = np.asarray(fold.train_windows, dtype=np.int64).reshape(-1, 2)
+        self._x, self._y = {}, {}
+        for number in np.unique(self._windows[:, 0]).tolist():
+            block = fold.blocks[fold.block_names[number]]
+            self._x[number] = torch.as_tensor(block.x, device=self.device).unfold(-1, fold.window, 1)
+            self._y[number] = torch.as_tensor(block.y, device=self.device).unfold(-1, fold.window, 1)
+
+    def __len__(self):
+        return len(self._numbers)
+
+    def __iter__(self):
+        for numbers in self._numbers:
+            rows = self._windows[numbers.numpy()]
+            x = y = None
+            for number in np.unique(rows[:, 0]).tolist():
+                xs, ys = self._x[number], self._y[number]
+                if x is None:
+                    x = torch.empty((len(rows), xs.shape[0], xs.shape[1], xs.shape[3]), dtype=xs.dtype, device=self.device)
+                    y = torch.empty((len(rows), ys.shape[0], ys.shape[2]), dtype=ys.dtype, device=self.device)
+                chosen = np.flatnonzero(rows[:, 0] == number)
+                where = torch.as_tensor(chosen, device=self.device)
+                starts = torch.as_tensor(rows[chosen, 1], device=self.device)
+                x[where] = xs[:, :, starts].permute(2, 0, 1, 3)
+                y[where] = ys[:, starts].permute(1, 0, 2)
+            yield x, y
+
+
+def make_loaders(fold, batch_size: int, seed: int, workers: int = 0, device=None):
+    """Batches and their order depend only on ``seed``.
+
+    With ``device`` the training windows are cut where the fold already lives (DeviceWindows);
+    otherwise ``workers`` (training.loader_workers) only assembles training batches in parallel
+    and pins them for an asynchronous GPU copy. Validation is a small host-side loader.
+    """
     if type(batch_size) is not int or batch_size < 1:
         raise ValueError("batch_size must be a positive integer")
     if type(workers) is not int or workers < 0:
         raise ValueError("workers must be a nonnegative integer")
     generator = torch.Generator().manual_seed(seed)
-    # Workers restart every epoch: persistent workers would stop drawing the per-epoch
-    # base seed from ``generator`` and change the shuffle (and resume state) after epoch 1.
-    train = DataLoader(FoldWindows(fold, "train"), batch_size=batch_size, shuffle=True,
-                       generator=generator, num_workers=workers, drop_last=False,
-                       pin_memory=workers > 0 and torch.cuda.is_available())
+    if device is not None:
+        train = DeviceWindows(fold, batch_size, generator, device)
+    else:
+        # Workers restart every epoch: persistent workers would stop drawing the per-epoch
+        # base seed from ``generator`` and change the shuffle (and resume state) after epoch 1.
+        train = DataLoader(FoldWindows(fold, "train"), batch_size=batch_size, shuffle=True,
+                           generator=generator, num_workers=workers, drop_last=False,
+                           pin_memory=workers > 0 and torch.cuda.is_available())
     val = DataLoader(FoldWindows(fold, "val"), batch_size=batch_size, shuffle=False,
                      num_workers=0, drop_last=False)
     return train, val
+
+
+def training_loaders(config, fold, batch_size: int, seed: int, device):
+    """Loaders for experiment runs, following training.windows_on_device and loader_workers."""
+    settings = config.data["training"]
+    return make_loaders(fold, batch_size, seed, settings["loader_workers"],
+                        device if settings["windows_on_device"] else None)
 
 
 def make_optimizer(model, learning_rate: float, weight_decay: float):
@@ -173,7 +228,8 @@ def profile_architecture(config, fold, arch, batch_size, device, seed):
             raise ValueError("Not enough windows to measure the requested full batch")
         seed_run(seed)
         loader, _ = make_loaders(fold, batch_size, seed)
-        x, y = next(iter(loader))
+        # Batches already live on the device during training (DeviceWindows): time the update only.
+        x, y = (tensor.to(device) for tensor in next(iter(loader)))
         model = build_model(config, x.shape[1], arch).to(device)
         optimizer = make_optimizer(model, config.data["training"]["reference_learning_rate"],
                                     config.data["training"]["reference_weight_decay"])
@@ -182,7 +238,7 @@ def profile_architecture(config, fold, arch, batch_size, device, seed):
                                     config.data["training"]["profile_measured_steps"])
         estimate = measured["seconds_per_batch"] * math.ceil(len(fold.train_windows) / batch_size)
         return {**row, **measured, "status": "OK", "train_epoch_seconds_estimate": estimate,
-                "estimate_excludes": "validation, full data-loading time and startup"}
+                "estimate_excludes": "validation, batch assembly and host-to-device copy, and startup"}
     except torch.cuda.OutOfMemoryError:
         return {**row, "status": "OOM", "details": "Reduce the common batch candidate and repeat all profiles"}
     finally:

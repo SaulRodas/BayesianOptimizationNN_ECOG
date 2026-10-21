@@ -16,7 +16,8 @@ from tt_ecog.io import (StoreError, approved_pipeline, read_json, sha256_file,
 from tt_ecog.losses import make_loss
 from tt_ecog.reporting import write_json
 from tt_ecog.training import (seed_run, make_loaders, make_optimizer, train_epoch, evaluate,
-                              profile_updates, profile_architecture, representative_architectures)
+                              profile_updates, profile_architecture, representative_architectures,
+                              DeviceWindows, training_loaders)
 from tt_ecog.validation import score_validation
 from conftest import ROOT
 
@@ -124,6 +125,43 @@ def test_loader_workers_keep_batches_order_and_resume_state(tiny_fold):
         make_loaders(tiny_fold, 2, 5, workers=-1)
 
 
+def test_device_windows_match_the_dataloader(config, tiny_fold, tmp_path):
+    """Windows cut on the device: same batches, order and generator state, across blocks."""
+    fold = replace(tiny_fold, train_windows=np.array([[0, 0], [1, 10], [0, 32], [1, 40], [0, 64]]))
+    reference, _ = make_loaders(fold, 2, 9)
+    on_device, _ = make_loaders(fold, 2, 9, device="cpu")
+    assert isinstance(on_device, DeviceWindows) and on_device.dataset.fold is fold and on_device.batch_size == 2
+    for _ in range(3):
+        expected, actual = list(reference), list(on_device)
+        assert len(expected) == len(actual) == len(on_device) == 3
+        for (x1, y1), (x2, y2) in zip(expected, actual):
+            assert torch.equal(x1, x2) and torch.equal(y1, y2)
+    assert torch.equal(reference.generator.get_state(), on_device.generator.get_state())
+
+    # A checkpoint taken with device windows resumes the same sequence of updates.
+    seed_run(4)
+    train, _ = make_loaders(fold, 2, 4, device="cpu")
+    model, loss_fn = small_model(), make_loss(config)
+    optimizer = make_optimizer(model, 1e-3, 1e-4)
+    train_epoch(model, optimizer, loss_fn, train, "cpu")
+    path = tmp_path / "last.pt"
+    save_training_checkpoint(path, model, optimizer, 1, {"pipeline_id": fold.pipeline_id}, train)
+    expected_loss = train_epoch(model, optimizer, loss_fn, train, "cpu")
+    fresh = small_model()
+    fresh_optimizer = make_optimizer(fresh, 1e-3, 1e-4)
+    fresh_train, _ = make_loaders(fold, 2, 4, device="cpu")
+    load_training_checkpoint(path, fresh, fresh_optimizer, fresh_train, fold.pipeline_id)
+    assert train_epoch(fresh, fresh_optimizer, loss_fn, fresh_train, "cpu") == expected_loss
+
+
+def test_training_loaders_follow_the_configuration(config, tiny_fold):
+    assert config.data["training"]["windows_on_device"] is True
+    assert isinstance(training_loaders(config, tiny_fold, 2, 1, "cpu")[0], DeviceWindows)
+    config.data["training"].update(windows_on_device=False, loader_workers=0)
+    train, _ = training_loaders(config, tiny_fold, 2, 1, "cpu")
+    assert isinstance(train, torch.utils.data.DataLoader) and train.num_workers == 0
+
+
 def test_interrupted_checkpoint_preserves_last_complete(config, tiny_fold, tmp_path, monkeypatch):
     train, _ = make_loaders(tiny_fold, 2, 1)
     model = small_model()
@@ -221,7 +259,7 @@ def test_notebook_training_cells_execute_on_synthetic_cpu_data(config_copy, tiny
     """Executes real cells; only Colab/GPU and real-data admission are excluded."""
     import yaml
     data = yaml.safe_load(config_copy.read_text(encoding="utf8"))
-    data["training"].update(batch_size_initial_candidate=2, search_epochs_candidate=2,
+    data["training"].update(batch_size=None, batch_size_initial_candidate=2, search_epochs_candidate=2,
                            profile_warmup_steps=1, profile_measured_steps=1)
     config_copy.write_text(yaml.safe_dump(data), encoding="utf8")
     namespace = {"CONFIG": config_copy, "DRIVE_ROOT": tmp_path, "fold": tiny_fold,
@@ -243,7 +281,7 @@ def test_notebook_training_cells_execute_on_synthetic_cpu_data(config_copy, tiny
 
 @pytest.mark.parametrize("field,value", [("search_epochs_candidate", 0), ("batch_size", -1),
                                          ("optimizer", "sgd"), ("scheduler", "cosine"),
-                                         ("loader_workers", -1), ("loader_workers", 1.5)])
+                                         ("loader_workers", -1), ("loader_workers", 1.5), ("windows_on_device", "yes")])
 def test_training_rejects_invalid_execution_config(config_copy, field, value):
     import yaml
     data = yaml.safe_load(config_copy.read_text(encoding="utf8"))

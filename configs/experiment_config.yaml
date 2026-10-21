@@ -204,13 +204,14 @@ training:
     cosine_weight: 0.5
     cosine_axis: temporal_per_finger
     eps: 1.0e-8
-  batch_size: null  # Definir con memoria medida en la GPU real de Colab Pro
+  batch_size: 128  # Decidido 2026-10-21: cabe en T4/L4/A100 (pico <= 1.6 GB); ver bitacora
   batch_size_initial_candidate: 128
   search_epochs: null  # DECISION POSTERIOR tras estudio de convergencia
   search_epochs_candidate: 50  # Propuesta de la persona usuaria; piloto, no aprobacion automatica
   profile_warmup_steps: 2
   profile_measured_steps: 3
-  loader_workers: 2  # Solo rendimiento: procesos que arman batches de train en paralelo; mismos batches y orden
+  windows_on_device: true  # Solo rendimiento: ventanas de train cortadas en la GPU; mismos batches y orden
+  loader_workers: 2  # Solo rendimiento, si windows_on_device es false: procesos que arman batches en la CPU
   final_max_epochs: null  # DECISION POSTERIOR, separada de search_epochs
   final_validation_block: B5  # Autorizado: bloque interno comun para A/B/C y los tres sujetos
   search_early_stopping: false

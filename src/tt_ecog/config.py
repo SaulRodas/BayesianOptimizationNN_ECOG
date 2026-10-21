@@ -281,6 +281,8 @@ def _validate_training_and_metrics(training: dict, metrics: dict) -> None:
             _positive_int(training[key], f"training.{key}")
     if type(training["loader_workers"]) is not int or training["loader_workers"] < 0:
         raise ConfigError("training.loader_workers: expected a nonnegative integer")
+    if type(training["windows_on_device"]) is not bool:
+        raise ConfigError("training.windows_on_device: expected true or false")
     loss = training["loss"]
     if (loss["name"] != "mse_plus_temporal_cosine" or loss["mse_weight"] != 0.5 or loss["cosine_weight"] != 0.5
             or loss["cosine_axis"] != "temporal_per_finger"):

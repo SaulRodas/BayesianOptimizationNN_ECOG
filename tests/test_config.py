@@ -16,7 +16,6 @@ def write(tmp_path, data):
 def test_pending_scientific_values_preserved(config):
     assert config.data["training"]["search_epochs"] is None
     assert config.data["training"]["final_max_epochs"] is None
-    assert config.data["training"]["batch_size"] is None
     assert config.data["paths"]["test_labels_dir"] is None
     with pytest.raises(ConfigError):
         config.path(ROOT, "test_labels_dir")
@@ -132,6 +131,11 @@ def test_approved_purge_regression_lock(config):
     validation = config.data["validation"]
     assert validation["purge_samples_at_100hz"] == validation["purge_candidate_for_tests"] == 256
     assert config.purge_for_build() == (256, "approved") and config.approved_purge() == 256
+
+
+def test_decided_batch_regression_lock(config):
+    # Decided 2026-10-21 from the T4/L4/A100 measurements (docs/experimental_log.md).
+    assert config.data["training"]["batch_size"] == config.data["training"]["batch_size_initial_candidate"] == 128
 
 
 def test_purge_is_pending_and_only_ever_a_labelled_candidate(config, tmp_path):

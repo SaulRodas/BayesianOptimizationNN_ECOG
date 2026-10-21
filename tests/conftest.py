@@ -1,5 +1,9 @@
 import json
+import os
 from pathlib import Path
+
+# Headless figures: tests never depend on a GUI toolkit such as Tk being usable.
+os.environ.setdefault("MPLBACKEND", "Agg")
 
 import numpy as np
 import pytest
