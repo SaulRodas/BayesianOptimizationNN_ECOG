@@ -1,4 +1,4 @@
-# TT ECoG
+# TT ECoG.
 
 Decodificación continua de cinco dedos con ECoG y U-Net 1D. Metodología: [protocolo v1.3](docs/protocolo_implementacion.md). Configuración única: `configs/experiment_config.yaml`.
 
