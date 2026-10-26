@@ -61,6 +61,60 @@ def fill_reevaluation(session, score=lambda trial, block: 0.2):
     return stage1_selection(session)
 
 
+def test_search_learning_curves_draw_every_fit_of_both_stages(search_config, tmp_path):
+    from types import SimpleNamespace
+    from optuna.distributions import CategoricalDistribution, FloatDistribution
+    from tt_ecog.reporting import search_learning_curves
+    storage = search_config.storage_root(tmp_path)
+
+    def run(name, score):
+        folder = storage / "results/training/S1" / name
+        folder.mkdir(parents=True)
+        pd.DataFrame({"epoch": [1, 2], "val_pearson_full": [0.1, score], "train_loss": [0.3, 0.1]}).to_csv(
+            folder / "epoch_metrics.csv", index=False)
+        return folder.relative_to(storage).as_posix()
+
+    def session(stage, policy, distributions, trials, user_attrs=None):
+        study = optuna.create_study(direction="maximize")
+        for number, (params, scores) in enumerate(trials):
+            runs = {b: run(f"{stage}_t{number}_{b}", s) for b, s in scores.items()}
+            folds = {b: {"val_pearson_full": s} for b, s in scores.items()}
+            study.add_trial(optuna.trial.create_trial(params=params, distributions=distributions,
+                                                      value=float(np.mean(list(scores.values()))),
+                                                      user_attrs={"runs": runs, "folds": folds}))
+        for key, value in (user_attrs or {}).items():
+            study.set_user_attr(key, value)
+        return SimpleNamespace(study=study, contract={"stage": stage, "subject": "S1", "pipeline_id": "a" * 64,
+                                                      "policy": policy})
+
+    first = deepcopy(search_config.data["optimization"]["stage1"])
+    first.update(trials_per_subject=4, reevaluation={"top_trials": 2, "validation_blocks": ["B1", "B3", "B5"]})
+    rates = {"learning_rate": FloatDistribution(1e-5, 1e-3, log=True),
+             "weight_decay": FloatDistribution(1e-6, 1e-2, log=True)}
+    stage1_trials = [({"learning_rate": lr, "weight_decay": 1e-4}, {"B2": s, "B4": s})
+                     for lr, s in ((1e-5, .2), (1e-4, .6), (3e-4, .5), (1e-3, .3))]
+    reevaluation = {"candidates": [1, 2], "failure": None,
+                    "runs": {str(n): {b: run(f"re_t{n}_{b}", s) for b in ("B1", "B3", "B5")} for n, s in ((1, .4), (2, .7))},
+                    "folds": {str(n): {b: {"val_pearson_full": s} for b in ("B1", "B3", "B5")} for n, s in ((1, .4), (2, .7))}}
+    fig, path = search_learning_curves(search_config, tmp_path,
+                                       session("stage1", first, rates, stage1_trials, {"reevaluation": reevaluation}))
+    assert path.is_file() and path.parent.name == "figures"
+    axes = fig.axes  # 2 x 3 panels plus the learning-rate colour bar
+    assert [len(ax.lines) for ax in axes[:6]] == [4, 4, 2, 4, 4, 2]
+    assert [line.get_linewidth() for line in axes[2].lines] == [0.9, 2.4]  # trial 2 wins on five folds
+
+    second = deepcopy(search_config.data["optimization"]["stage2"])
+    second["trials_per_subject"] = 3
+    shapes = {k: CategoricalDistribution(v) for k, v in second["search"].items()}
+    blocks = second["validation_blocks"]
+    stage2_trials = [({"kernel_size": k, "encoder_levels": 5, "base_filters": 64}, {b: s for b in blocks})
+                     for k, s in ((5, .6), (3, .7), (7, .5))]
+    fig, path = search_learning_curves(search_config, tmp_path, session("stage2", second, shapes, stage2_trials))
+    assert path.name == "S1_stage2_learning_curves.png" and len(fig.axes) == 12
+    assert all(len(ax.lines) == 3 for ax in fig.axes) and fig.axes[5].lines[1].get_linewidth() == 2.4
+    assert "k3 L5 f64" in fig.axes[5].lines[1].get_label()
+
+
 def test_pending_values_do_not_use_pilot_candidates(config):
     # Pending, independent of the decisions recorded in the YAML.
     config.data["training"].update(batch_size=None, search_epochs=None)

@@ -297,6 +297,66 @@ def report_search(session):
     return summary
 
 
+def search_learning_curves(config, drive_root, session):
+    """Validation Pearson and training loss per epoch of every fit of a completed study.
+
+    Descriptive only: reads the saved epoch metrics and never changes the selection. Stage 1
+    shows each search fold (colour = learning rate; finalists opaque) and the finalists'
+    five-fold mean; stage 2 shows each fold and the five-fold mean of every trial. The
+    selected trial is drawn thick. Saved outside the study folder, so its manifest is intact.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib import cm, colors
+    from .config import inside
+    from .optimization import completed_selection, stage1_selection
+    storage = config.storage_root(drive_root)
+    trials, contract = session.study.get_trials(), session.contract
+    blocks = contract["policy"]["validation_blocks"]
+    panels = [(f"validación {b}", {t.number: [t.user_attrs["runs"][b]] for t in trials}) for b in blocks]
+    if contract["stage"] == "stage1":
+        selection = stage1_selection(session)
+        highlight = [f["trial"] for f in selection["finalists"]]
+        extra = session.study.user_attrs["reevaluation"]["runs"]
+        panels.append(("finalistas · media de 5 folds",
+                       {n: [*trials[n].user_attrs["runs"].values(), *extra[str(n)].values()] for n in highlight}))
+        rates = [t.params["learning_rate"] for t in trials]
+        norm = colors.LogNorm(min(rates), max(rates))
+        color = {t.number: cm.viridis(norm(t.params["learning_rate"])) for t in trials}
+        label = {t.number: f"trial {t.number} (lr {t.params['learning_rate']:.1e}, "
+                           f"wd {t.params['weight_decay']:.1e})" for t in trials}
+    else:
+        selection, highlight = completed_selection(session), [t.number for t in trials]
+        panels.append(("media de 5 folds", {t.number: [t.user_attrs["runs"][b] for b in blocks] for t in trials}))
+        color = {t.number: plt.get_cmap("tab10")(t.number % 10) for t in trials}
+        label = {t.number: "trial {} (k{kernel_size} L{encoder_levels} f{base_filters})".format(t.number, **t.params)
+                 for t in trials}
+    fig, axes = plt.subplots(2, len(panels), figsize=(4.4 * len(panels), 6.6), sharex=True, squeeze=False,
+                             layout="constrained")
+    for col, (title, groups) in enumerate(panels):
+        for number, paths in groups.items():
+            frames = [pd.read_csv(inside(storage, p) / "epoch_metrics.csv").set_index("epoch") for p in paths]
+            pearson = pd.concat([f["val_pearson_full"] for f in frames], axis=1).mean(axis=1)
+            loss = pd.concat([f["train_loss"] for f in frames], axis=1).mean(axis=1)
+            top = number == selection["trial"]
+            style = dict(color=color[number], lw=2.4 if top else 0.9, alpha=1.0 if number in highlight else 0.35,
+                         zorder=3 if top else 1)
+            axes[0, col].plot(pearson.index, pearson, label=label[number] + (" ← elegido" if top else ""), **style)
+            axes[1, col].plot(loss.index, loss, **style)
+        axes[0, col].set_title(f"{contract['subject']} · {contract['stage']} · {title}", fontsize=10)
+    axes[0, -1].legend(fontsize=7)
+    for ax in axes[0]:
+        ax.set_ylabel("Pearson reconstruido (val)")
+    for ax in axes[1]:
+        ax.set(yscale="log", ylabel="Pérdida de entrenamiento", xlabel="Época")
+    if contract["stage"] == "stage1":
+        fig.colorbar(cm.ScalarMappable(norm=norm, cmap="viridis"), ax=axes[:, :-1], label="learning rate")
+    folder = config.path(drive_root, "optimization_dir") / contract["pipeline_id"] / "figures"
+    folder.mkdir(parents=True, exist_ok=True)
+    path = folder / f"{contract['subject']}_{contract['stage']}_learning_curves.png"
+    fig.savefig(path, dpi=140)
+    return fig, path
+
+
 def record_training_resume(output, device, epoch):
     from .training import device_info
     from .io import read_json

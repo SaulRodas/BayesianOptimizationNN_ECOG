@@ -350,3 +350,21 @@ Las incidencias descubiertas tras una congelacion invalidaran solamente los arte
 - **Elección de B2 y B4:** bloques interiores, con entrenamiento antes y después del bloque validado, y separados en el tiempo.
 - **Reevaluación v1.3:** el LR/WD elegido con 2 folds se hereda a la etapa 2 y a B y C. Al elegirse y medirse en los mismos folds, el ganador tiende a estar inflado por azar. Reevaluar a 3 finalistas en B1, B3 y B5 (3 de 5 folds nuevos) reduce la desviación del puntaje final ~37 % (√(2/5)) con +27 entrenamientos. Alternativas consideradas: 3 folds en los 20 trials (+60; ~18 % menos desviación; el ganador sigue elegido y medido en los mismos folds) y la combinación de ambas (+78; mejora marginal de la guía de TPE).
 - **Limitaciones declaradas:** TPE se guía con puntajes de 2 folds; el LR/WD se ajusta con la arquitectura de referencia y B2/B4 son 2 de los 5 folds de la etapa 2, lo que puede favorecer ligeramente a la referencia; la búsqueda por etapas no captura la interacción LR × arquitectura; 10 trials no garantizan el óptimo de 27 (§10.4).
+
+## 2026-10-26 — Resultados de la etapa 1 (05) y curvas de aprendizaje en `reporting`
+
+- **Ejecución:** etapa 1 completa en A100 para S1–S3 (20 trials × B2/B4 por sujeto) y reevaluación de los 3 finalistas en B1/B3/B5; estado `COMPLETE` en los tres estudios. Batch 128, 50 épocas, última época, pipeline `b26db4c45dc163882b7ca8ca06432b822bd231e4ec35780a0285afd34c920fff`.
+- **Selección (LR/WD heredados por la etapa 2, B y C):**
+
+  | Sujeto | Trial | Learning rate | Weight decay | Media B2/B4 | Media 5 folds |
+  |---|---|---|---|---|---|
+  | S1 | 11 | 1.427e-4 | 9.59e-5 | 0.5993 | 0.5782 |
+  | S2 | 3 | 2.149e-4 | 1.461e-4 | 0.5283 | 0.5172 |
+  | S3 | 18 | 2.779e-4 | 2.300e-3 | 0.7873 | 0.7648 |
+
+  Otros finalistas (media de 5 folds): S1 trial 4 0.5776 y trial 6 0.5684; S2 trial 16 0.5064 y trial 5 0.5032; S3 trial 19 0.7636 y trial 15 0.7621.
+- **Observaciones:** en los tres sujetos TPE se concentró en una región de LR intermedia (~1–3e-4); los LR bajos convergen lento y los cercanos a 1e-3 se estancan más abajo o con más ruido. Los LR elegidos son 1.7–3.3 veces el de referencia (8.42e-5); el WD es similar al de referencia en S1 y S2 y unas 23 veces mayor en S3, el sujeto con el LR más alto. Los finalistas casi coinciden: la elección es robusta frente a cuál de ellos se tome.
+- **Reevaluación:** la media de B2/B4 de los finalistas supera a la de los cinco folds en 0.01–0.04 (sesgo del ganador elegido y medido en los mismos folds). En S1 cambió el ganador (trial 4 → 11) por 0.0006, un empate técnico; en S2 y S3 se mantuvo el orden. B5 es el fold más difícil en S1 (~0.48–0.53) y S2 (~0.38–0.40).
+- **Comparación descriptiva con la referencia en B2** (mismo fold, semilla del fold, 50 épocas y GPU; referencia del diagnóstico de convergencia): S1 0.647 → 0.667, S2 0.527 → 0.544, S3 0.751 → 0.769 (+0.017 a +0.020), del orden de 1–2 veces el ruido entre semillas y con sesgo optimista porque B2 participó en la selección. La comparación formal A frente a B corresponde al 07.
+- **Curvas de aprendizaje:** `reporting.search_learning_curves` grafica Pearson de validación y pérdida de entrenamiento por época de todos los entrenamientos de un estudio terminado (etapa 1: cada fold de búsqueda con color por LR y la media de cinco folds de los finalistas; etapa 2: cada fold y la media de cada trial), con el trial elegido resaltado. Es descriptiva, no cambia la selección y guarda en `results/optimization/<pipeline_id>/figures/`. Se añadió como celda final del 05 y del 06, con una prueba sobre un estudio en memoria de ambas etapas (PASS local).
+- **Siguiente:** etapa 2 (06), que hereda estos LR/WD.
