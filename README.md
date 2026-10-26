@@ -1,8 +1,8 @@
-# TT ECoG
+# TT ECoG.
 
 Decodificación continua de cinco dedos con ECoG y U-Net 1D. Metodología: [protocolo v1.3](docs/protocolo_implementacion.md). Configuración única: `configs/experiment_config.yaml`.
 
-## Ejecutar en VS Code con kernel Colab
+## Ejecutar en VS Code con kernel Colab.
 
 1. Guardar `sub1_comp.mat`, `sub2_comp.mat`, `sub3_comp.mat` en `MyDrive/TT_ECoG/raw`. No colocar etiquetas de test ahí.
 2. Hacer commit/push local. La primera celda actualiza el clon de Colab con `git pull --ff-only` y muestra el commit.
