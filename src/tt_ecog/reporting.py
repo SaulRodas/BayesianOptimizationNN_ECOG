@@ -379,13 +379,17 @@ def restore_epoch_metrics(output, history):
 
 
 def report_final_evaluation(config, output):
-    """Tables and figures from saved predictions only; never reopen test or train."""
+    """Tables and figures from saved predictions only; never reopen test or train.
+
+    A/B/C/D form the comparison. Every seed of D (C is member 0) and their mean before
+    smoothing go to a separate table: all repeated seeds are reported (protocol §11.2).
+    """
     import numpy as np
     import matplotlib.pyplot as plt
     from .io import read_json, verify_manifest, write_manifest
-    from .final_evaluation import VARIANTS
+    from .final_evaluation import VARIANTS, ENSEMBLE
     plan = read_json(output / "plan.json")
-    rows = []
+    rows, detail = [], []
     for subject in config.data["project"]["subjects"]:
         folder = output / subject / "test"
         verify_manifest(folder, "artifact_manifest.json")
@@ -396,7 +400,7 @@ def report_final_evaluation(config, output):
         fig, axes = plt.subplots(5, 1, figsize=(14, 11), sharex=True)
         for k, ax in enumerate(axes):
             ax.plot(time, np.where(valid, truth[k], np.nan), color="black", label="Test", linewidth=1)
-        for variant in VARIANTS:
+        for variant in (*VARIANTS, ENSEMBLE):
             result = report["variants"][variant]
             prediction = np.load(folder / f"prediction_{variant}.npy")
             for k, finger in enumerate(result["fingers"]):
@@ -406,9 +410,16 @@ def report_final_evaluation(config, output):
                              **{key: result[key] for key in ("inference_seconds", "peak_allocated_bytes", "peak_reserved_bytes")}})
                 axes[k].plot(time, prediction[k], label=variant, alpha=0.7, linewidth=0.8)
                 axes[k].set_ylabel(finger)
+        ensemble = report["ensemble"]
+        for model, result in (*ensemble["members"].items(), ("mean_before_smoothing", ensemble["mean_before_smoothing"])):
+            for k, finger in enumerate(result["fingers"]):
+                detail.append({"pipeline_id": plan["pipeline_id"], "run_id": plan["run_id"], "subject": subject,
+                               "model": model, "seed": result.get("seed"), "finger": finger,
+                               "n_samples": result["n_samples"],
+                               **{key: result[key][k] for key in ("pearson", "ccc", "mse", "rmse")}})
         axes[0].legend(loc="upper right")
         axes[-1].set_xlabel("Tiempo de la flexión (s); ECoG adelantado 0.2 s")
-        fig.suptitle(subject + " — comparación final A/B/C, unidades originales")
+        fig.suptitle(subject + " — comparación final A/B/C/D, unidades originales")
         fig.tight_layout()
         fig.savefig(output / f"{subject}_predictions.png", dpi=140)
         plt.close(fig)
@@ -416,8 +427,12 @@ def report_final_evaluation(config, output):
     frame.to_csv(output / "metrics_per_finger.csv", index=False)
     summary = frame.groupby(["subject", "variant"], sort=False)[["pearson", "ccc", "mse", "rmse"]].mean()
     summary.to_csv(output / "metrics_per_subject.csv")
+    members = pd.DataFrame(detail)
+    members.to_csv(output / "metrics_ensemble_detail.csv", index=False)
+    members = members.groupby(["subject", "model"], sort=False)[["pearson", "ccc", "mse", "rmse"]].mean()
     write_json(output / "evaluation_summary.json", {"status": "COMPLETE", "pipeline_id": plan["pipeline_id"],
                "run_id": plan["run_id"], "test_accessed": True, "completed_at_utc": utc_now(),
-               "rmse_summary": "mean of the five per-finger RMSE values", "objective": "Pearson macro"})
+               "rmse_summary": "mean of the five per-finger RMSE values", "objective": "Pearson macro",
+               "variants": [*VARIANTS, ENSEMBLE], "ensemble_detail": "metrics_ensemble_detail.csv"})
     write_manifest(output, "artifact_manifest.json", {"pipeline_id": plan["pipeline_id"], "run_id": plan["run_id"]})
-    return frame, summary
+    return frame, summary, members

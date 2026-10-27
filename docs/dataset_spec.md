@@ -82,7 +82,7 @@ Los números de canales validos difieren por sujeto tras la exclusión fija de `
 **Nota:** el test utiliza la misma transformación y retardo, pero sus etiquetas se leen solamente al abrir la etapa de evaluación final. La simple lectura de etiquetas de test durante EDA cuenta como acceso no autorizado.
 
 En 07, `read_final_test` exige aprobación del pipeline y `frozen.json` con todos los modelos
-A/B/C terminados antes de resolver `paths.test_labels_dir` (relativo a `TT_ECoG`). El adaptador
+A/B/C y los miembros de D terminados, y el σ de D congelado, antes de resolver `paths.test_labels_dir` (relativo a `TT_ECoG`). El adaptador
 lee exclusivamente `test_data` del archivo de competencia y `test_dg` del archivo de etiquetas,
 con SHA-256 antes/después y el mismo contrato MATLAB clásico/HDF5. El cargador de desarrollo
 mantiene su prohibición de claves y archivos de test.
@@ -94,9 +94,12 @@ mantiene su prohibición de claves y archivos de test.
 - **Etapa 2:** validar B1, B2, B3, B4 y B5, uno por entrenamiento.
 - **Prueba independiente:** `test_data` y `test_dg`, reservados hasta evaluación final.
 - No existe intercambio de datos entre sujetos, ni tratamiento de folds disjuntos como una sola serie continua.
-- La duración final se elige con el fold B5 purgado, común a sujetos y variantes. En el refit
-  final los escaladores se ajustan con todo desarrollo válido; las ventanas conservan B1–B5
-  independientes. Un solo par de escaladores por sujeto sirve a A/B/C y nunca se ajusta en test.
+- La duración final se elige con el fold B5 purgado, común a sujetos y variantes; el σ de D
+  (v1.4) también se elige ahí, con las trayectorias B5 de sus miembros. En el refit final los
+  escaladores se ajustan con todo desarrollo válido; las ventanas conservan B1–B5
+  independientes. Un solo par de escaladores por sujeto sirve a A/B/C y a los miembros de D y
+  nunca se ajusta en test. El suavizado de D actúa dentro de cada tramo válido, sin cruzar
+  columnas inválidas.
 - La purga aprobada se define tras medir soporte temporal efectivo de filtros/Morlet; no asumir que 256 muestras bastan.
 - Las máscaras de validez corresponden a bordes, alineación y purga; no hay máscaras temporales de artefactos ni reparaciones locales.
 
@@ -139,11 +142,15 @@ Validar: claves esperadas; matrices bidimensionales de tipo numérico; finitud; 
   conservan `pipeline_id`; cada entrenamiento por fold tiene su propio `run_id`, parámetros,
   checkpoint e historial. Los estudios y checkpoints se guardan fuera de los arrays inmutables.
 - El 07 publica resultados fuera de desarrollo, en `results/evaluation/<run_id>/`. Por sujeto
-  conserva `scalers.npz` (centro/escala, mínimos/máximos y canales retenidos) y por variante
-  la selección interna, curvas y checkpoint final. `frozen.json` registra las decisiones y hashes.
-  `S*/test/` contiene verdad/predicciones en unidades originales, índices ECoG/flexión, máscara,
-  ventanas, cobertura y métricas; se publica solo al completarse. Los CSV y figuras comparan
-  los mismos instantes válidos para A/B/C. No se sobrescriben corridas históricas.
+  conserva `scalers.npz` (centro/escala, mínimos/máximos y canales retenidos),
+  `internal_validation.npz` (flexión y máscara de B5, de desarrollo) y, por variante y por
+  miembro de D, la selección interna, la trayectoria B5 de la época elegida
+  (`selection_prediction.npz`), curvas y checkpoint final; `ensemble_smoothed_D/selection.json`
+  guarda el σ de D. `frozen.json` registra las decisiones y hashes.
+  `S*/test/` contiene verdad/predicciones en unidades originales (A/B/C, cada miembro de D, su
+  promedio y D), índices ECoG/flexión, máscara, ventanas, cobertura y métricas; se publica solo al
+  completarse. Los CSV y figuras comparan los mismos instantes válidos para A/B/C/D. No se
+  sobrescriben corridas históricas.
 
 El lector conjunto `read_development` abre solo `train_data` y `train_dg`, con hash del archivo antes y después. El EDA es opcional. Las referencias históricas a figuras no se resuelven para cargar datos.
 

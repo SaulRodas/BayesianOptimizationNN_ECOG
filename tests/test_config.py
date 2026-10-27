@@ -13,9 +13,9 @@ def write(tmp_path, data):
     return path
 
 
-def test_pending_scientific_values_preserved(config):
-    assert config.data["training"]["final_max_epochs"] is None
-    assert config.data["paths"]["test_labels_dir"] is None
+def test_test_labels_path_is_never_resolvable_through_config(config):
+    # Set 2026-10-27 for the 07; only its gated reader resolves it, never config.path.
+    assert config.data["paths"]["test_labels_dir"] == "test_labels"
     with pytest.raises(ConfigError):
         config.path(ROOT, "test_labels_dir")
 
@@ -113,6 +113,27 @@ def test_stage1_reevaluation_completes_five_folds_within_budget(config, tmp_path
         load_config(write(tmp_path, data))
 
 
+@pytest.mark.parametrize("change", [
+    lambda e: e.update(base_variant="training_optimized_B"),
+    lambda e: e.update(seed_offsets=[1000, 2000]),       # C must be member 0
+    lambda e: e.update(seed_offsets=[0, 1000, 1000]),    # repeated seed
+    lambda e: e.update(seed_offsets=[0]),                # no ensemble
+    lambda e: e["smoothing"].update(sigma_samples=[5, 10]),     # no-smoothing option missing
+    lambda e: e["smoothing"].update(sigma_samples=[0, 10, 5]),
+    lambda e: e["smoothing"].update(sigma_samples=[0, -5]),
+    lambda e: e["smoothing"].update(truncate_sigmas=0),
+    lambda e: e["smoothing"].update(selection="max_test_pearson")])
+def test_variant_d_is_c_over_predefined_seeds_with_internal_sigma(config, tmp_path, change):
+    # Authorized 2026-10-26 (protocol v1.4; docs/experimental_log.md).
+    ensemble = config.data["final_evaluation"]["ensemble"]
+    assert ensemble["seed_offsets"] == [0, 1000, 2000, 3000, 4000]
+    assert ensemble["smoothing"]["sigma_samples"] == [0, 5, 10, 20, 40]
+    data = deepcopy(config.data)
+    change(data["final_evaluation"]["ensemble"])
+    with pytest.raises(ConfigError, match="final_evaluation.ensemble"):
+        load_config(write(tmp_path, data))
+
+
 def test_selected_pipeline_id(config, tmp_path):
     assert "reference_run" not in config.data["channels"]
     data = deepcopy(config.data)
@@ -138,6 +159,9 @@ def test_decided_training_budget_regression_lock(config):
     training = config.data["training"]
     assert training["batch_size"] == training["batch_size_initial_candidate"] == 128
     assert training["search_epochs"] == 50 and 50 in config.data["convergence_study"]["candidate_epochs"]
+    # Final training (07), decided 2026-10-27 from the development curves.
+    assert (training["final_max_epochs"], training["final_early_stopping_patience"],
+            training["final_early_stopping_min_delta"]) == (100, 15, 0.005)
 
 
 def test_purge_is_pending_and_only_ever_a_labelled_candidate(config, tmp_path):

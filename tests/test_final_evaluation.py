@@ -13,9 +13,12 @@ from scipy.io import savemat
 from tt_ecog import io, preprocessing as pp
 from tt_ecog.config import ConfigError
 from tt_ecog.datasets import fit_fold_scalers, full_development, inference_window_starts
-from tt_ecog.final_evaluation import (VARIANTS, final_policy, epoch_selection, selected_variants,
-                                      predict_trajectory, score_test)
-from tt_ecog.training import make_loaders
+from tt_ecog.final_evaluation import (VARIANTS, ENSEMBLE, final_policy, epoch_selection, selected_variants,
+                                      final_runs, ensemble_members, smooth_trajectory, smoothing_selection,
+                                      internal_prediction, predict_trajectory, score_test)
+from tt_ecog.losses import make_loss
+from tt_ecog.metrics import trajectory_metrics
+from tt_ecog.training import make_loaders, evaluate, fold_seed
 from conftest import ROOT
 from test_training import tiny_fold, cpu_threads, small_model
 
@@ -58,6 +61,88 @@ def test_epoch_selection_stopping_ties_and_small_improvements():
         epoch_selection([{'epoch': 1, 'val_pearson_full': float('nan')}], policy)
 
 
+def test_d_members_train_c_with_predefined_seeds(final_config):
+    runs = final_runs(final_config, plans()['S1'], 'S1')
+    members = ensemble_members(final_config)
+    seed = fold_seed(final_config, 'S1', 'B5')
+    offsets = final_config.data['final_evaluation']['ensemble']['seed_offsets']
+    assert members[0] == VARIANTS[2] and list(runs) == [*VARIANTS, *members[1:]]
+    assert all(runs[variant]['seed'] == seed for variant in VARIANTS)
+    assert [runs[name]['seed'] for name in members] == [seed + offset for offset in offsets]
+    assert all(runs[name]['parameters'] == plans()['S1'][VARIANTS[2]] for name in members)
+
+
+def test_smoothing_is_normalized_and_never_crosses_invalid_columns():
+    from scipy.ndimage import gaussian_filter1d
+    rng = np.random.default_rng(3)
+    valid = np.ones(400, dtype=bool)
+    valid[:2] = valid[200:210] = False
+    prediction = np.where(valid, rng.normal(size=(5, 400)), np.nan)
+    np.testing.assert_array_equal(smooth_trajectory(prediction, valid, 0, 4.0), prediction)
+    smoothed = smooth_trajectory(prediction, valid, 5, 4.0)
+    assert np.isnan(smoothed[:, ~valid]).all() and np.isfinite(smoothed[:, valid]).all()
+    # Far from the run edges it is the ordinary Gaussian filter.
+    np.testing.assert_allclose(smoothed[:, 50:150], gaussian_filter1d(prediction[:, 2:200], 5, axis=-1)[:, 48:148])
+    # The kernel is renormalized at the edges, so a constant survives up to them.
+    np.testing.assert_allclose(smooth_trajectory(np.where(valid, 3.0, np.nan) + np.zeros((5, 1)), valid, 40, 4.0)
+                               [:, valid], 3.0)
+    changed = prediction.copy()
+    changed[:, 210:] += 100.0
+    np.testing.assert_array_equal(smooth_trajectory(changed, valid, 40, 4.0)[:, :200],
+                                  smooth_trajectory(prediction, valid, 40, 4.0)[:, :200])
+    prediction[0, 100] = np.nan
+    with pytest.raises(ValueError, match='Nonfinite'):
+        smooth_trajectory(prediction, valid, 5, 4.0)
+
+
+def test_smoothing_selection_maximizes_internal_pearson_smallest_sigma_on_ties(final_config):
+    truth, valid = internal_truth()
+    rng = np.random.default_rng(11)
+    members = np.stack([np.where(valid, truth + rng.normal(size=truth.shape), np.nan)
+                        for _ in final_config.data['final_evaluation']['ensemble']['seed_offsets']])
+    decision = smoothing_selection(final_config, truth, valid, members)
+    table = decision['sigma_table']
+    assert [row['sigma_samples'] for row in table] == [0, 5, 10, 20, 40]
+    assert decision['selected_sigma_samples'] == max(table, key=lambda r: r['pearson_macro'])['sigma_samples'] > 0
+    mean = trajectory_metrics(truth, members.mean(axis=0), valid, degenerate_std_relative=1e-9)['pearson_macro']
+    assert table[0]['pearson_macro'] == mean > max(decision['member_internal_pearson'])
+    assert decision['members'] == ensemble_members(final_config)
+    # A sigma far below one sample leaves the trajectory unchanged: the tie keeps the smaller sigma.
+    final_config.data['final_evaluation']['ensemble']['smoothing']['sigma_samples'] = [0, 1e-12]
+    tie = smoothing_selection(final_config, truth, valid, members)
+    assert tie['sigma_table'][0]['pearson_macro'] == tie['sigma_table'][1]['pearson_macro']
+    assert tie['selected_sigma_samples'] == 0
+    with pytest.raises(ValueError, match='one'):
+        smoothing_selection(final_config, truth, valid, members[:2])
+    members[1, 0, 20] = np.nan
+    with pytest.raises(ValueError, match='cover'):
+        smoothing_selection(final_config, truth, valid, members)
+
+
+def test_internal_prediction_reproduces_the_scored_epoch(final_config, tiny_fold):
+    model = small_model()
+    _, val = make_loaders(tiny_fold, 2, 1)
+    metrics = evaluate(model, make_loss(final_config), tiny_fold, val, 'cpu', 1e-9)
+    prediction = internal_prediction(final_config, model, tiny_fold, 2, 'cpu', metrics['val_pearson_full'])
+    block = tiny_fold.blocks['B2']
+    assert prediction.shape == block.y_original.shape and np.isfinite(prediction[:, block.valid]).all()
+    with pytest.raises(ValueError, match='reproduce'):
+        internal_prediction(final_config, model, tiny_fold, 2, 'cpu', metrics['val_pearson_full'] + 0.01)
+
+
+def test_only_the_selected_epoch_trajectory_is_kept(tmp_path):
+    for epoch in (1, 2, 3):
+        io.save_selection_prediction(tmp_path, epoch, np.full((5, 4), float(epoch)))
+    io.save_selection_prediction(tmp_path, 2, np.full((5, 4), 20.0))  # an epoch retrained after a disconnect
+    io.keep_selected_prediction(tmp_path, 2)
+    epoch, prediction = io.load_selected_prediction(tmp_path)
+    assert epoch == 2 and (prediction == 20.0).all()
+    assert not (tmp_path / 'selection_predictions').exists()
+    io.keep_selected_prediction(tmp_path, 2)  # repeating the cell after a reconnection
+    with pytest.raises(io.StoreError, match='another epoch'):
+        io.keep_selected_prediction(tmp_path, 3)
+
+
 def development_arrays(tiny_fold):
     return {f'B{k}': {'x': tiny_fold.blocks['B1' if k % 2 else 'B2'].x.copy(),
                       'y': tiny_fold.blocks['B1' if k % 2 else 'B2'].y_original.copy(),
@@ -81,8 +166,33 @@ def test_full_development_scalers_and_windows_stay_inside_blocks(final_config, t
     np.testing.assert_allclose(sy.data_min_, expected_min)
 
 
+def internal_truth():
+    """Smooth flexion of a synthetic internal block, with an invalid gap between two runs."""
+    t = np.arange(320) / 100
+    truth = np.stack([np.sin(2 * np.pi * (0.3 + 0.1 * k) * t) + 2 for k in range(5)])
+    valid = np.ones(320, dtype=bool)
+    valid[150:160] = False
+    return truth, valid
+
+
+def write_selection(folder, config, truth, valid, rng):
+    """Two selection epochs whose stored internal trajectories give the recorded scores."""
+    history = []
+    for epoch in (1, 2):
+        prediction = np.where(valid, truth + rng.normal(scale=0.3 * epoch, size=truth.shape), np.nan)
+        io.save_selection_prediction(folder, epoch, prediction)
+        score = trajectory_metrics(truth, prediction, valid,
+                                   degenerate_std_relative=config.data['metrics']['degenerate_std_relative'])
+        history.append({'epoch': epoch, 'val_pearson_full': score['pearson_macro']})
+    decision = epoch_selection(history, final_policy(config))
+    io.atomic_json(folder / 'selection.json', decision)
+    io.keep_selected_prediction(folder, decision['selected_epoch'])
+    return history, decision
+
+
 @pytest.fixture
-def frozen_run(final_config, tiny_fold, tmp_path):
+def final_run(final_config, tiny_fold, tmp_path):
+    """Every model of A/B/C and D completed, with D's sigma chosen, but not yet frozen."""
     output = io.open_final_run(final_config, tmp_path, plans(), 'cpu')
     arrays = development_arrays(tiny_fold)
     sx, sy, _ = fit_fold_scalers(final_config, arrays, {k: a['valid'] for k, a in arrays.items()})
@@ -91,17 +201,27 @@ def frozen_run(final_config, tiny_fold, tmp_path):
     train, _ = make_loaders(fold, 2, 1)
     model = small_model()
     optimizer = torch.optim.AdamW(model.parameters())
-    history = [{'epoch': 1, 'val_pearson_full': 0.3}, {'epoch': 2, 'val_pearson_full': 0.2}]
-    for variant, params in plans()['S1'].items():
-        folder = output / 'S1' / variant
-        run = {'pipeline_id': fold.pipeline_id, 'variant_parameters': params}
+    truth, valid = internal_truth()
+    io.save_internal_validation(output / 'S1', 'B5', truth, valid)
+    rng = np.random.default_rng(5)
+    for name, run_plan in final_runs(final_config, plans()['S1'], 'S1').items():
+        folder = output / 'S1' / name
+        history, decision = write_selection(folder, final_config, truth, valid, rng)
+        run = {'pipeline_id': fold.pipeline_id, 'variant_parameters': run_plan['parameters'], 'seed': run_plan['seed']}
         io.save_training_checkpoint(folder / 'selection.pt', model, optimizer, 2, run, train, history)
-        io.atomic_json(folder / 'selection.json', epoch_selection(history, final_policy(final_config)))
-        io.save_training_checkpoint(folder / 'last.pt', model, optimizer, 1, run, train, [{'epoch': 1}])
+        io.save_training_checkpoint(folder / 'last.pt', model, optimizer, decision['selected_epoch'], run, train,
+                                    [{'epoch': 1}])
         pd.DataFrame(history).to_csv(folder / 'selection.csv', index=False)
         pd.DataFrame([{'epoch': 1}]).to_csv(folder / 'refit.csv', index=False)
-    io.freeze_final_run(final_config, output)
+    members = [io.load_selected_prediction(output / 'S1' / name)[1] for name in ensemble_members(final_config)]
+    io.atomic_json(output / 'S1' / ENSEMBLE / 'selection.json', smoothing_selection(final_config, truth, valid, members))
     return output
+
+
+@pytest.fixture
+def frozen_run(final_config, final_run):
+    io.freeze_final_run(final_config, final_run)
+    return final_run
 
 
 def test_freezing_integrity_reuse_and_explicit_resume(final_config, frozen_run, tmp_path):
@@ -126,6 +246,36 @@ def test_changed_duration_and_missing_variant_block_test(final_config, frozen_ru
     (frozen_run / 'S1' / VARIANTS[2] / 'last.pt').unlink()
     with pytest.raises(io.StoreError, match='missing'):
         io.verify_final_run(final_config, frozen_run)
+
+
+def test_freezing_rederives_d_from_stored_development_evidence(final_config, final_run):
+    path = final_run / 'S1' / ENSEMBLE / 'selection.json'
+    decision = io.read_json(path)
+    other = next(row['sigma_samples'] for row in decision['sigma_table']
+                 if row['sigma_samples'] != decision['selected_sigma_samples'])
+    io.atomic_json(path, {**decision, 'selected_sigma_samples': other})
+    with pytest.raises(io.StoreError, match='smoothing'):
+        io.freeze_final_run(final_config, final_run)
+    io.atomic_json(path, decision)
+    member = final_run / 'S1' / ensemble_members(final_config)[1]
+    kept = (member / 'selection_prediction.npz').read_bytes()
+    epoch, prediction = io.load_selected_prediction(member)
+    with (member / 'selection_prediction.npz').open('wb') as stream:
+        np.savez(stream, epoch=epoch, prediction=prediction[::-1])
+    with pytest.raises(io.StoreError, match='reproduce'):
+        io.freeze_final_run(final_config, final_run)
+    (member / 'selection_prediction.npz').write_bytes(kept)
+    state = torch.load(member / 'last.pt', weights_only=True)
+    state['parameters']['seed'] += 1
+    torch.save(state, member / 'last.pt')
+    with pytest.raises(io.StoreError, match='Refit checkpoint'):
+        io.freeze_final_run(final_config, final_run)
+    state['parameters']['seed'] -= 1
+    torch.save(state, member / 'last.pt')
+    frozen = io.freeze_final_run(final_config, final_run)
+    assert frozen['ensemble']['S1'] == decision
+    assert set(frozen['decisions']['S1']) == set(final_runs(final_config, plans()['S1'], 'S1'))
+    assert f'S1/{ENSEMBLE}/selection.json' in frozen['files'] and 'S1/internal_validation.npz' in frozen['files']
 
 
 def test_missing_freeze_never_resolves_or_reads_test(final_config, tmp_path, monkeypatch):
@@ -210,6 +360,12 @@ def test_variants_use_completed_subject_studies(final_config, tmp_path):
     assert c['source_trials'][1]['parameters'] == c['architecture']
 
 
+def internal_fold(tiny_fold):
+    """tiny_fold with its validation block named like the configured internal block (B5)."""
+    blocks = {'B1': tiny_fold.blocks['B1'], 'B5': replace(tiny_fold.blocks['B2'], name='B5')}
+    return replace(tiny_fold, name='val_B5', val_block='B5', block_names=('B1', 'B5'), blocks=blocks)
+
+
 def test_notebook07_synthetic_training_resume_freeze_and_test(final_config, tiny_fold, tmp_path, monkeypatch):
     """Actual notebook operations/U-Net/preprocessing; synthetic data admission, never real PASS."""
     pipeline = tmp_path / ('a' * 64)
@@ -241,7 +397,7 @@ def test_notebook07_synthetic_training_resume_freeze_and_test(final_config, tiny
     run('setup', ns)
     ns.update(config=final_config, pipeline_dir=pipeline, device=torch.device('cpu'),
               policy=final_policy(final_config), selected_variants=lambda *a: plans()['S1'],
-              load_fold=lambda *a, **kw: replace(tiny_fold, val_block='B2'))
+              load_fold=lambda *a, **kw: internal_fold(tiny_fold))
     run('plan', ns)
     real_train = ns['train_epoch']
     calls = 0
@@ -257,7 +413,25 @@ def test_notebook07_synthetic_training_resume_freeze_and_test(final_config, tiny
     checkpoint = ns['output'] / 'S1' / VARIANTS[0] / 'selection.pt'
     assert torch.load(checkpoint, weights_only=True)['epoch'] == 1
     ns['train_epoch'] = real_train
+    # Disconnect after an epoch's internal trajectory is written but before its checkpoint:
+    # the epoch is retrained and its trajectory replaced (freezing checks they reproduce).
+    real_save = ns['save_training_checkpoint']
+    saves = 0
+    def lost_checkpoint(*a, **kw):
+        nonlocal saves
+        saves += 1
+        if saves == 2:
+            raise KeyboardInterrupt('synthetic disconnect before the checkpoint')
+        return real_save(*a, **kw)
+    ns['save_training_checkpoint'] = lost_checkpoint
+    with pytest.raises(KeyboardInterrupt):
+        run('selection', ns)
+    assert (ns['output'] / 'S1' / VARIANTS[1] / 'selection_predictions' / 'epoch_001.npy').is_file()
+    assert not (ns['output'] / 'S1' / VARIANTS[1] / 'selection.pt').exists()
+    ns['save_training_checkpoint'] = real_save
     run('selection', ns)
+    smoothing = io.read_json(ns['output'] / 'S1' / ENSEMBLE / 'selection.json')
+    assert smoothing['members'] == ensemble_members(final_config)
     calls = 0
     ns['train_epoch'] = interrupted
     with pytest.raises(KeyboardInterrupt):
@@ -285,18 +459,34 @@ def test_notebook07_synthetic_training_resume_freeze_and_test(final_config, tiny
         np.testing.assert_array_equal(actual_x, expected_x)
     # x is released by the notebook; the shared mask/times/targets remain on disk.
     saved = ns['output'] / 'S1' / 'test'
-    np.testing.assert_array_equal(np.load(saved / 'valid.npy'), fv[xi] & yv[yi])
+    valid = np.load(saved / 'valid.npy')
+    np.testing.assert_array_equal(valid, fv[xi] & yv[yi])
     np.testing.assert_allclose(np.load(saved / 'truth.npy'), expected_y, equal_nan=True)
-    table, summary = ns['report_final_evaluation'](final_config, ns['output'])
-    assert len(table) == 15 and len(summary) == 3
+    # D: the frozen sigma applied to the mean of its members (C is member 0), all seeds reported.
+    members = ensemble_members(final_config)
+    assert len(inputs) == len(VARIANTS) + len(members) - 1
+    mean = np.mean([np.load(saved / f"prediction_{name.replace('/', '_')}.npy") for name in members], axis=0)
+    np.testing.assert_array_equal(np.load(saved / 'prediction_ensemble_mean_D.npy'), mean)
+    np.testing.assert_array_equal(np.load(saved / f'prediction_{ENSEMBLE}.npy'),
+                                  smooth_trajectory(mean, valid, smoothing['selected_sigma_samples'], 4.0))
+    report = io.read_json(saved / 'metrics.json')
+    assert list(report['variants']) == [*VARIANTS, ENSEMBLE] and list(report['ensemble']['members']) == members
+    runs = final_runs(final_config, plans()['S1'], 'S1')
+    assert [report['ensemble']['members'][name]['seed'] for name in members] == [runs[n]['seed'] for n in members]
+    assert report['ensemble']['sigma_samples'] == smoothing['selected_sigma_samples']
+    table, summary, ensemble_detail = ns['report_final_evaluation'](final_config, ns['output'])
+    assert len(table) == 20 and len(summary) == 4
+    assert list(ensemble_detail.index.get_level_values('model')) == [*members, 'mean_before_smoothing']
     assert table.groupby('variant')['n_samples'].first().nunique() == 1
     manifest = io.verify_manifest(ns['output'], 'artifact_manifest.json')
     assert manifest['pipeline_id'] == pipeline.name
-    for variant in VARIANTS:
-        folder = ns['output'] / 'S1' / variant
+    for name, run_plan in runs.items():
+        folder = ns['output'] / 'S1' / name
         selected = io.read_json(folder / 'selection.json')['selected_epoch']
         state = torch.load(folder / 'last.pt', weights_only=True)
-        assert state['epoch'] == selected
+        assert state['epoch'] == selected and state['parameters']['seed'] == run_plan['seed']
+        assert io.load_selected_prediction(folder)[0] == selected
+        assert not (folder / 'selection_predictions').exists()
     def forbidden(*a, **kw):
         pytest.fail('Frozen/completed run must neither retrain nor reopen test')
     ns.update(train_epoch=forbidden, read_final_test=forbidden)

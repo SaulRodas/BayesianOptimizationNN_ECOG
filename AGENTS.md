@@ -35,6 +35,14 @@ de cada sujeto (media de B2 y B4) se entrenan también en B1, B3 y B5 con el mis
 etapa 2, B y C heredan el LR/WD del finalista con mayor media de los cinco folds. No se crean
 trials ni cambia la guía de TPE; la búsqueda pasa de 270 a 297 entrenamientos.
 
+**Cambio metodológico autorizado (2026-10-26, protocolo v1.4):** el 07 añade la variante **D**:
+la configuración de C con cinco semillas predefinidas (`final_evaluation.ensemble`; la primera es la
+de C, que es su miembro 0), promediada en unidades originales y suavizada con un filtro gaussiano
+dentro de cada tramo válido. El σ se elige solo con B5, entre {0, 5, 10, 20, 40} muestras, por mayor
+Pearson macro del promedio (el menor σ en un empate). A/B/C, la búsqueda, los datos y el pipeline no
+cambian; se entrenan 12 modelos más. D, sus miembros y el σ se congelan antes de abrir test; se
+informan cada miembro y el promedio sin suavizar. No ajustar σ, semillas ni miembros con test.
+
 **Cambio metodológico autorizado (2026-10-18, protocolo v1.1):** se eliminó la etapa de QC con umbrales, `qc_decisions.json` y aprobación. El flujo obligatorio es **02 Preprocesamiento → 03 Verificación**; el EDA es opcional (actualización autorizada v1.2). La exclusión de canales es una lista fija en el YAML (ver reglas). Ver `docs/experimental_log.md` y `docs/channel_exclusion.md`.
 
 ## Plan de implementación obligatorio
@@ -90,7 +98,7 @@ trials ni cambia la guía de TPE; la búsqueda pasa de 270 a 297 entrenamientos.
 - Paso 3: V01-V14 PASS real (no mocks que simulen exito), reporte, hashes y evidencia persistidos. De no haber archivos `.mat`, informar BLOQUEADO, no PASS.
 - Factibilidad: GPU real, memoria peak en entrenamiento, batch común y costos documentados.
 - Optuna: estudios persistentes recuperables con folds, semillas y parámetros registrados.
-- Evaluación: tres variantes A/B/C, por sujeto y dedo; métrica Pearson principal, CCC y errores secundarios, misma cobertura y criterios.
+- Evaluación: tres variantes A/B/C más la variante D (v1.4), por sujeto y dedo; métrica Pearson principal, CCC y errores secundarios, misma cobertura y criterios; todos los miembros de D reportados.
 
 Para iniciar: leer `docs/CODEX_START.md`, `docs/protocolo_implementacion.md` y `docs/validation_requirements.md`, confirmar la estructura del dataset sin inspeccionar las etiquetas de test y desarrollar por fases. No lanzar Optuna de forma automática.
 

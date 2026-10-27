@@ -8,13 +8,15 @@ import numpy as np
 import torch
 
 from .config import ConfigError, positive
+from .datasets import contiguous_runs
 from .model import reference_architecture
 from .metrics import trajectory_metrics
 from .validation import overlap_add
-from .training import synchronize, reset_peak_memory, peak_memory
+from .training import fold_seed, synchronize, reset_peak_memory, peak_memory
 
 
 VARIANTS = ("baseline_A", "training_optimized_B", "architecture_optimized_C")
+ENSEMBLE = "ensemble_smoothed_D"  # protocol v1.4: C over predefined seeds, averaged and smoothed
 
 
 def final_policy(config):
@@ -68,6 +70,27 @@ def selected_variants(config, drive_root, subject):
     }
 
 
+def ensemble_members(config):
+    """Run folders averaged by D: member 0 is C itself, then one folder per extra seed."""
+    ensemble = config.data["final_evaluation"]["ensemble"]
+    extra = range(1, len(ensemble["seed_offsets"]))
+    return [ensemble["base_variant"], *(f"{ENSEMBLE}/member_{k}" for k in extra)]
+
+
+def final_runs(config, plans, subject):
+    """Every model 07 trains for one subject, keyed by its folder: A/B/C and D's extra members.
+
+    A/B/C share the seed of the internal fold. Member k of D trains C's configuration with
+    that seed plus its predefined offset (offset 0 is C), under the same duration rule.
+    """
+    seed = fold_seed(config, subject, config.data["training"]["final_validation_block"])
+    ensemble = config.data["final_evaluation"]["ensemble"]
+    runs = {variant: {"parameters": plans[variant], "seed": seed} for variant in VARIANTS}
+    for name, offset in zip(ensemble_members(config)[1:], ensemble["seed_offsets"][1:]):
+        runs[name] = {"parameters": plans[ensemble["base_variant"]], "seed": seed + offset}
+    return runs
+
+
 def epoch_selection(history, policy):
     """Highest internal Pearson (earliest tie); patience counts significant improvements.
 
@@ -91,6 +114,66 @@ def epoch_selection(history, policy):
     return {"selected_epoch": best + 1, "selected_val_pearson_full": scores[best],
             "completed_epochs": len(history), "stale_epochs": stale,
             "stop": stale >= policy["patience"] or len(history) >= policy["max_epochs"]}
+
+
+def smooth_trajectory(prediction, valid, sigma, truncate):
+    """Gaussian smoothing of every finger inside each contiguous run of valid columns.
+
+    Normalized convolution: near a run edge the kernel uses only that run's samples, so
+    padding invents no values and runs separated by invalid columns never mix. Symmetric
+    (non-causal), like the rest of the offline evaluation. sigma 0 leaves values unchanged.
+    """
+    prediction = np.asarray(prediction, dtype=np.float64)
+    valid = np.asarray(valid, dtype=bool)
+    if prediction.ndim != 2 or valid.shape != prediction.shape[1:]:
+        raise ValueError(f"Expected (fingers, T) predictions and a (T,) mask; got {prediction.shape}, {valid.shape}")
+    positive(sigma, "sigma", zero=True)
+    positive(truncate, "truncate")
+    if not np.isfinite(prediction[:, valid]).all():
+        raise ValueError("Nonfinite prediction inside the valid columns")
+    smoothed = np.full_like(prediction, np.nan)
+    if sigma == 0:
+        smoothed[:, valid] = prediction[:, valid]
+        return smoothed
+    from scipy.ndimage import gaussian_filter1d
+    for start, stop in contiguous_runs(valid):
+        weight = gaussian_filter1d(np.ones(stop - start), sigma, mode="constant", cval=0.0, truncate=truncate)
+        smoothed[:, start:stop] = gaussian_filter1d(prediction[:, start:stop], sigma, axis=-1, mode="constant",
+                                                    cval=0.0, truncate=truncate) / weight
+    return smoothed
+
+
+def smoothing_selection(config, truth, valid, members):
+    """D's sigma from the internal block only: highest Pearson macro (smallest sigma on ties).
+
+    ``members`` are the internal-block trajectories (glove units) of D's members at their
+    selected epochs, trained without that block. Recomputing it from the stored arrays must
+    give the same decision, so freezing can check it like the epoch selections.
+    """
+    ensemble = config.data["final_evaluation"]["ensemble"]
+    smoothing = ensemble["smoothing"]
+    members = np.asarray(members, dtype=np.float64)
+    if members.ndim != 3 or members.shape[0] != len(ensemble["seed_offsets"]) or members.shape[1:] != np.shape(truth):
+        raise ValueError(f"Expected one (fingers, T) internal trajectory per member; got {members.shape}")
+    if not np.isfinite(members[:, :, valid]).all():
+        raise ValueError("A member does not cover every valid internal column")
+    relative = config.data["metrics"]["degenerate_std_relative"]
+    combined = members.mean(axis=0)
+    table = []
+    for sigma in smoothing["sigma_samples"]:
+        result = trajectory_metrics(truth, smooth_trajectory(combined, valid, sigma, smoothing["truncate_sigmas"]),
+                                    valid, degenerate_std_relative=relative)
+        if not result["valid"]:
+            raise ValueError(f"Invalid internal Pearson with sigma {sigma}: " + "; ".join(result["diagnostics"]))
+        table.append({"sigma_samples": sigma, "pearson_macro": result["pearson_macro"],
+                      **dict(zip(result["fingers"], result["pearson"]))})
+    best = int(np.argmax([row["pearson_macro"] for row in table]))  # first maximum: smallest sigma
+    return {"selected_sigma_samples": table[best]["sigma_samples"],
+            "selected_internal_pearson": table[best]["pearson_macro"],
+            "truncate_sigmas": smoothing["truncate_sigmas"], "members": ensemble_members(config),
+            "member_internal_pearson": [trajectory_metrics(truth, m, valid, degenerate_std_relative=relative)
+                                        ["pearson_macro"] for m in members],
+            "sigma_table": table}
 
 
 @torch.no_grad()
@@ -117,9 +200,33 @@ def predict_trajectory(model, x, starts, valid, target_scaler, batch_size, devic
     return predicted, coverage, {"inference_seconds": perf_counter() - started, **peak_memory(device)}
 
 
+def internal_prediction(config, model, fold, batch_size, device, val_pearson_full):
+    """Internal-block trajectory (glove units) of the epoch just scored, kept for D's sigma.
+
+    Same windows, overlap-add and inverse scaling as the validation score: the stored
+    trajectory must reproduce that epoch's val_pearson_full, or the run fails.
+    """
+    block = fold.blocks[fold.val_block]
+    predicted, _, _ = predict_trajectory(model, block.x, fold.val_windows, block.valid, fold.target_scaler,
+                                         batch_size, device)
+    score = trajectory_metrics(block.y_original, predicted, block.valid,
+                               degenerate_std_relative=config.data["metrics"]["degenerate_std_relative"])
+    if not score["valid"] or not math.isclose(score["pearson_macro"], val_pearson_full, rel_tol=1e-6, abs_tol=1e-9):
+        raise ValueError(f"Internal trajectory does not reproduce val_pearson_full: "
+                         f"{score['pearson_macro']} vs {val_pearson_full}")
+    return predicted
+
+
 def score_test(truth, predicted, valid, config):
     result = trajectory_metrics(truth, predicted, valid,
                                degenerate_std_relative=config.data["metrics"]["degenerate_std_relative"])
     if not result["valid"]:
         raise ValueError("Invalid test Pearson: " + "; ".join(result["diagnostics"]))
     return result
+
+
+def combined_timing(timings):
+    """D's inference cost: every member's forward passes; memory peak of the largest one."""
+    peaks = {key: [t[key] for t in timings] for key in ("peak_allocated_bytes", "peak_reserved_bytes")}
+    return {"inference_seconds": sum(t["inference_seconds"] for t in timings),
+            **{key: None if None in values else max(values) for key, values in peaks.items()}}

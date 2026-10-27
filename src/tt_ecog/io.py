@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import hashlib
 import json
+import math
 import shutil
 
 import h5py
@@ -469,61 +470,132 @@ def load_final_scalers(config, folder):
                 pp.restore_target_scaler(config, a["data_min"], a["data_max"]))
 
 
+def save_selection_prediction(folder, epoch, prediction):
+    """Internal-block trajectory of one selection epoch, written BEFORE that epoch's checkpoint.
+
+    A reconnection retrains an epoch whose checkpoint was lost and replaces its file, so every
+    epoch of a restored history keeps the trajectory of the model that produced its score.
+    """
+    path = Path(folder) / "selection_predictions" / f"epoch_{epoch:03d}.npy"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_suffix(".partial")
+    with partial.open("wb") as stream:
+        np.save(stream, np.asarray(prediction, dtype=np.float64), allow_pickle=False)
+    partial.replace(path)
+
+
+def keep_selected_prediction(folder, epoch):
+    """Once the duration is chosen, keep only the selected epoch's internal trajectory."""
+    folder = Path(folder)
+    kept, epochs = folder / "selection_prediction.npz", folder / "selection_predictions"
+    if not kept.exists():
+        prediction = np.load(epochs / f"epoch_{epoch:03d}.npy", allow_pickle=False)
+        partial = kept.with_suffix(".partial")
+        with partial.open("wb") as stream:
+            np.savez(stream, epoch=epoch, prediction=prediction)
+        partial.replace(kept)
+    if load_selected_prediction(folder)[0] != epoch:
+        raise StoreError("The kept internal trajectory belongs to another epoch")
+    if epochs.exists():
+        shutil.rmtree(epochs)
+
+
+def load_selected_prediction(folder):
+    with np.load(Path(folder) / "selection_prediction.npz", allow_pickle=False) as a:
+        return int(a["epoch"]), a["prediction"]
+
+
+def save_internal_validation(folder, block, truth, valid):
+    """Development flexion of the internal block, so freezing can re-derive D's sigma."""
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    partial = folder / "internal_validation.partial"
+    with partial.open("wb") as stream:
+        np.savez(stream, block=np.array(block), truth=truth, valid=valid)
+    partial.replace(folder / "internal_validation.npz")
+
+
+def load_internal_validation(folder):
+    with np.load(Path(folder) / "internal_validation.npz", allow_pickle=False) as a:
+        return str(a["block"]), a["truth"], a["valid"]
+
+
 def freeze_final_run(config, output):
-    """Freeze all subject/variant models BEFORE opening any test variable."""
+    """Freeze every subject model and D's smoothing BEFORE opening any test variable."""
     import torch
-    from .final_evaluation import final_contract, VARIANTS, epoch_selection, final_policy
+    from .final_evaluation import (final_contract, ENSEMBLE, epoch_selection, final_policy, final_runs,
+                                   ensemble_members, smoothing_selection)
+    from .metrics import trajectory_metrics
     from .reporting import utc_now
     if (output / "frozen.json").exists():
         return verify_final_run(config, output)
     plan = read_json(output / "plan.json")
     if plan["contract"] != final_contract(config):
         raise StoreError("Final configuration changed since the pre-test plan")
+    policy = final_policy(config)
     files = {name: sha256_file(output / name) for name in ("plan.json", "config.json", "environment.json")}
-    decisions = {}
+    decisions, ensemble = {}, {}
     for subject in config.data["project"]["subjects"]:
-        scaler_path = f"{subject}/scalers.npz"
-        files[scaler_path] = sha256_file(output / scaler_path)
+        block, truth, valid = load_internal_validation(output / subject)
+        if block != policy["validation_block"]:
+            raise StoreError("Internal trajectories belong to another validation block")
+        for name in ("scalers.npz", "internal_validation.npz"):
+            files[f"{subject}/{name}"] = sha256_file(output / subject / name)
         decisions[subject] = {}
-        for variant in VARIANTS:
-            folder = output / subject / variant
+        for run_name, run in final_runs(config, plan["plans"][subject], subject).items():
+            folder = output / subject / run_name
             chosen = read_json(folder / "selection.json")
             selection = torch.load(folder / "selection.pt", map_location="cpu", weights_only=True)
-            if chosen != epoch_selection(selection["history"], final_policy(config)) or not chosen["stop"]:
+            if chosen != epoch_selection(selection["history"], policy) or not chosen["stop"]:
                 raise StoreError("Incomplete internal epoch selection")
+            epoch, prediction = load_selected_prediction(folder)
+            score = trajectory_metrics(truth, prediction, valid, degenerate_std_relative=config.data["metrics"]
+                                       ["degenerate_std_relative"])["pearson_macro"]
+            if (epoch != chosen["selected_epoch"] or score is None
+                    or not math.isclose(score, chosen["selected_val_pearson_full"], rel_tol=1e-6, abs_tol=1e-9)):
+                raise StoreError("Stored internal trajectory does not reproduce the selected epoch")
             checkpoint = torch.load(folder / "last.pt", map_location="cpu", weights_only=True)
-            expected = plan["plans"][subject][variant]
             if (checkpoint["epoch"] != chosen["selected_epoch"]
                     or checkpoint["parameters"]["pipeline_id"] != plan["pipeline_id"]
-                    or checkpoint["parameters"]["variant_parameters"] != expected
+                    or checkpoint["parameters"]["variant_parameters"] != run["parameters"]
+                    or checkpoint["parameters"]["seed"] != run["seed"]
                     or checkpoint["loader_contract"]["subject"] != subject
                     or checkpoint["loader_contract"]["fold"] != "full_development"):
                 raise StoreError("Refit checkpoint is incomplete or belongs to another decision")
-            decisions[subject][variant] = chosen
-            for name in ("selection.json", "selection.pt", "last.pt", "refit.csv", "selection.csv"):
-                relative = f"{subject}/{variant}/{name}"
+            decisions[subject][run_name] = chosen
+            for name in ("selection.json", "selection.pt", "selection_prediction.npz", "last.pt", "refit.csv",
+                         "selection.csv"):
+                relative = f"{subject}/{run_name}/{name}"
                 files[relative] = sha256_file(output / relative)
+        relative = f"{subject}/{ENSEMBLE}/selection.json"
+        members = [load_selected_prediction(output / subject / name)[1] for name in ensemble_members(config)]
+        if read_json(output / relative) != smoothing_selection(config, truth, valid, members):
+            raise StoreError("D's smoothing does not follow from the stored internal trajectories")
+        ensemble[subject] = read_json(output / relative)
+        files[relative] = sha256_file(output / relative)
     source = config.source.parent.parent
     # Freeze numerical/methodological code, not optional EDA or presentation code.
     # Full source provenance is already recorded in environment.json.
     components = ("preprocessing.py", "splits.py", "datasets.py", "model.py", "losses.py", "metrics.py",
                   "validation.py", "prep/blocks.py", "prep/folds.py", "training.py", "final_evaluation.py", "io.py")
     code = {f"src/tt_ecog/{name}": sha256_file(source / "src/tt_ecog" / name) for name in components}
-    frozen = {**plan, "decisions": decisions, "files": files, "source_sha256": code,
+    frozen = {**plan, "decisions": decisions, "ensemble": ensemble, "files": files, "source_sha256": code,
               "frozen_at_utc": utc_now(), "test_accessed_at_freeze": False}
     atomic_json(output / "frozen.json", frozen)
     return frozen
 
 
 def verify_final_run(config, output):
-    from .final_evaluation import final_contract, VARIANTS
+    from .final_evaluation import final_contract, final_runs
     if not (output / "frozen.json").is_file():
         raise StoreError("Freeze all final models and development decisions before test access")
     frozen = verify_manifest(output, "frozen.json")
     if frozen["contract"] != final_contract(config):
         raise StoreError("Frozen final settings differ from the current configuration")
     for subject in config.data["project"]["subjects"]:
-        if set(frozen["decisions"].get(subject, {})) != set(VARIANTS):
+        plans = frozen["plans"].get(subject)
+        if (plans is None or set(frozen["decisions"].get(subject, {})) != set(final_runs(config, plans, subject))
+                or subject not in frozen.get("ensemble", {})):
             raise StoreError("Missing final subject/variant decisions")
     source = config.source.parent.parent
     for name, digest in frozen["source_sha256"].items():

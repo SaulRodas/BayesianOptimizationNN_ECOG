@@ -1,6 +1,6 @@
 # Inicio de trabajo — TT ECoG
 
-Leer `AGENTS.md`, el protocolo v1.3, los requisitos de verificación, el contrato del dataset y el YAML. El README principal describe comandos y responsabilidades.
+Leer `AGENTS.md`, el protocolo v1.4, los requisitos de verificación, el contrato del dataset y el YAML. El README principal describe comandos y responsabilidades.
 
 ## Estado de implementación
 
@@ -22,7 +22,8 @@ EDA opcional, preprocesamiento, arquitectura mínima y verificación implementad
    escritor por estudio; los fallos detienen la búsqueda sin añadir propuestas.
 
 8. Decidir máximo final, paciencia y min_delta usando desarrollo. Ejecutar 07: seleccionar
-   duración con B5 (autorizado), reentrenar A/B/C con desarrollo completo, congelar y evaluar test.
+   duración con B5 (autorizado) y el σ de D (v1.4), reentrenar A/B/C y los miembros de D con
+   desarrollo completo, congelar y evaluar test.
    Registrar `paths.final_run_id` para recuperar la misma corrida, y resolver `test_labels_dir`
    únicamente en la celda final de acceso a test.
 

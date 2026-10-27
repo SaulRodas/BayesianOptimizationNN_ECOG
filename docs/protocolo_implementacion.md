@@ -3,10 +3,12 @@
 **Proyecto:** Decodificación continua de la flexión de cinco dedos mediante señales electrocorticográficas (ECoG) y redes encoder–decoder 1D  
 **Fuente de datos:** BCI Competition IV — Dataset 4  
 **Sujetos:** S1, S2 y S3  
-**Versión documental:** 1.3 — Reevaluación de los finalistas de la etapa 1
-**Fecha:** 20 de octubre de 2026  
+**Versión documental:** 1.4 — Variante D: ensamble de semillas y suavizado de C
+**Fecha:** 26 de octubre de 2026  
 **Entorno previsto:** Python, PyTorch, MNE-Python, scikit-learn, Optuna y Google Colab Pro  
 **Estado:** diseño de implementación; pendiente de verificación técnica integral y de definición posterior del número de épocas.
+
+> **Cambio autorizado v1.4 (2026-10-26).** Por decisión de la persona usuaria, el 07 añade una variante **D**, registrada antes de abrir test: la configuración de C (arquitectura, LR/WD y regla de duración) entrenada con cinco semillas predefinidas, promediada en unidades originales y suavizada con un filtro gaussiano. La primera semilla es la de C, así que C es su miembro 0. El σ se elige solo con desarrollo, en el fold interno B5, entre {0, 5, 10, 20, 40} muestras a 100 Hz (§11.2). A/B/C, la búsqueda, los datos y el pipeline no cambian; el 07 entrena 12 modelos más (4 semillas adicionales × 3 sujetos, con su selección de duración). Motivo: ensamble y suavizado son las mejoras más confiables que no tocan el preprocesamiento; se informan como variante aparte para no mezclarlas con el efecto de la optimización bayesiana (A → B → C).
 
 > **Cambio autorizado v1.3 (2026-10-20).** Por decisión de la persona usuaria, los 3 mejores trials de la etapa 1 de cada sujeto (media de B2 y B4) se entrenan también en B1, B3 y B5, con el mismo contrato. El learning rate y weight decay que heredan la etapa 2 y las variantes B y C son los del finalista con mayor media de los cinco folds. La búsqueda TPE, sus 20 trials y la etapa 2 no cambian; el presupuesto de búsqueda pasa de 270 a 297 entrenamientos (§10.2 y §10.4). Motivo: el par de la etapa 1 se arrastra a todo lo demás, y elegirlo con solo dos folds favorece al ganador por azar.
 
@@ -29,8 +31,9 @@ La investigación comparará tres configuraciones bajo un protocolo común:
 | **A. Modelo base** | U-Net 1D de referencia | Valores de referencia fijos | Establecer una comparación controlada |
 | **B. Optimización de entrenamiento** | Misma U-Net de referencia | `learning_rate` y `weight_decay` optimizados | Medir el efecto de la primera etapa |
 | **C. Optimización de arquitectura** | U-Net parametrizable optimizada | Valores seleccionados en B y mantenidos fijos | Medir el efecto adicional de la segunda etapa |
+| **D. Ensamble suavizado (v1.4)** | La de C, con cinco semillas predefinidas (C es la primera) | Los de C | Medir el efecto adicional de promediar semillas y suavizar con un σ elegido en desarrollo |
 
-A, B y C deberán utilizar exactamente las mismas definiciones de datos válidos, limpieza, transformación, pérdida, métricas, semillas comparables y evaluación final. La única diferencia entre A y B será la selección de los hiperparámetros de entrenamiento; entre B y C, la selección arquitectónica.
+A, B y C deberán utilizar exactamente las mismas definiciones de datos válidos, limpieza, transformación, pérdida, métricas, semillas comparables y evaluación final. La única diferencia entre A y B será la selección de los hiperparámetros de entrenamiento; entre B y C, la selección arquitectónica. D usa los mismos datos, escaladores, métricas y cobertura que C; difiere en el número de modelos promediados y en el suavizado, por lo que su diferencia con C no se atribuye a la optimización bayesiana.
 
 ### 1.1. Decisiones establecidas
 
@@ -614,8 +617,9 @@ La etapa 2 exige los 20 trials completos de la etapa 1 y la reevaluación comple
 - **A:** arquitectura y hiperparámetros de referencia.
 - **B:** arquitectura de referencia y mejores parámetros de entrenamiento seleccionados (finalista de la etapa 1 con mayor media de los cinco folds).
 - **C:** mejores parámetros de entrenamiento seleccionados y arquitectura elegida en etapa 2.
+- **D (v1.4):** la configuración de C con las semillas `semilla común + {0, 1000, 2000, 3000, 4000}` (`final_evaluation.ensemble.seed_offsets`); el miembro 0 es C, que se entrena una sola vez. Su predicción es el promedio de los cinco miembros en unidades originales, suavizado con un filtro gaussiano de σ elegido en B5.
 
-Todos se entrenan de nuevo desde cero, con el mismo pipeline, política de semillas y procedimiento de selección de duración final.
+Todos se entrenan de nuevo desde cero, con el mismo pipeline, política de semillas y procedimiento de selección de duración final. Cada miembro de D aplica ese procedimiento con su propia semilla.
 
 ### 11.2. Procedimiento
 
@@ -626,28 +630,36 @@ Todos se entrenan de nuevo desde cero, con el mismo pipeline, política de semil
 5. Inferir por ventanas y reconstruir con overlap-add, respetando las máscaras de validez predefinidas.
 6. Calcular las métricas en los instantes válidos de la línea temporal correspondiente; no elegir cobertura después de observar las predicciones.
 7. Si se repiten semillas, usar un conjunto de semillas predefinido y reportar todas las ejecuciones sin seleccionar la mejor a partir de test.
+8. **Variante D (v1.4), decidida solo con desarrollo:**
+   - Cada miembro selecciona su duración en B5 con la regla del paso 1. En cada época se guarda la trayectoria B5 reconstruida (unidades originales) antes del checkpoint y se comprueba que reproduce su `val_pearson_full`; al terminar se conserva solo la de la época elegida.
+   - El σ de D se elige con el promedio de las trayectorias B5 de los cinco miembros en sus épocas elegidas: el de mayor Pearson macro entre {0, 5, 10, 20, 40} muestras, y el menor σ en un empate. σ = 0 equivale a no suavizar. Un único σ por sujeto, común a los cinco dedos.
+   - El suavizado es una convolución gaussiana normalizada, truncada a 4σ, aplicada a cada dedo dentro de cada tramo contiguo de columnas válidas. En los bordes de un tramo usa solo muestras de ese tramo; nunca cruza columnas inválidas. Es simétrico (no causal), como el resto de la evaluación offline.
+   - Los miembros se reentrenan con todo desarrollo (paso 2) con su semilla y duración. En test, D es el promedio de los cinco miembros, suavizado con el σ congelado, sobre las mismas entradas y cobertura que A/B/C. Se informan también cada miembro y el promedio sin suavizar (paso 7).
+   - B5 se usa así para dos decisiones de desarrollo (duración y σ); la cifra de B5 de D es optimista y no se reporta como desempeño independiente.
 
 La preparación de `07_evaluacion_final.ipynb` y sus pruebas sintéticas fue autorizada el
 2026-10-19 antes de completar experimentos reales. La ejecución conserva los bloqueos del
 protocolo: V01–V14 aprobado, estudios 05/06 completos y parámetros finales decididos. Los
-nueve modelos, escaladores, parámetros y duraciones se congelan antes del primer acceso a
-test. La selección de B5 sirve para elegir duración, no para reportar desempeño independiente
-tras la búsqueda. Las interrupciones recuperan la última época completa; tras abrir test solo
-se permite completar inferencia o reportes con los modelos ya congelados.
+modelos (A/B/C y los cuatro miembros adicionales de D por sujeto), escaladores, parámetros,
+duraciones y el σ de D se congelan antes del primer acceso a test; al congelar se recalcula el σ
+con las trayectorias B5 guardadas. La selección de B5 sirve para elegir duración y σ, no para
+reportar desempeño independiente tras la búsqueda. Las interrupciones recuperan la última época
+completa; tras abrir test solo se permite completar inferencia o reportes con los modelos ya
+congelados.
 
 ### 11.3. Métricas y productos finales
 
 | Métrica | Uso |
 |---|---|
-| **Pearson macro** | Comparación principal A/B/C |
+| **Pearson macro** | Comparación principal A/B/C; D se informa junto a ellas como variante adicional |
 | Pearson por dedo | Identificar diferencias de desempeño entre dedos |
 | MSE y RMSE | Magnitud de errores; usar unidades originales cuando corresponda |
 | CCC | Concordancia entre predicción y objetivo |
 | Tiempo/memoria de inferencia | Caracterización técnica, sin afirmar automáticamente viabilidad en tiempo real |
 
-Se guardarán trayectorias reales y predichas alineadas para visualización, tablas por sujeto, gráficos A/B/C, parámetros óptimos y un informe de cobertura temporal.
+Se guardarán trayectorias reales y predichas alineadas para visualización, tablas por sujeto, gráficos A/B/C/D, parámetros óptimos, el σ de D con su tabla de B5, una tabla con cada miembro de D y su promedio sin suavizar, y un informe de cobertura temporal.
 
-La interpretación debe limitarse al esquema de evaluación realmente ejecutado. No atribuir a TPE una mejora ocasionada por un cambio de preprocesamiento entre variantes, ni afirmar superioridad sobre Random Search sin un comparador de igual presupuesto.
+La interpretación debe limitarse al esquema de evaluación realmente ejecutado. No atribuir a TPE una mejora ocasionada por un cambio de preprocesamiento entre variantes, ni afirmar superioridad sobre Random Search sin un comparador de igual presupuesto. La diferencia entre C y D se debe al ensamble y al suavizado, no a la búsqueda; D promedia cinco modelos, así que no compite en igualdad de cómputo con A/B/C, que no tienen ensamble.
 
 ---
 
@@ -706,7 +718,7 @@ Cada archivo de métricas por época debe registrar, al menos: `pipeline_id`, `r
 | **5** | Definición del presupuesto de épocas | `SEARCH_EPOCHS` y política final registrados | Decisión documentada |
 | **6** | Optimización TPE, etapa 1 | 20 trials × 2 folds × 3 sujetos, más 3 finalistas × 3 folds × 3 sujetos | Parámetros de entrenamiento seleccionados con cinco folds |
 | **7** | Optimización TPE, etapa 2 | 10 trials × 5 folds × 3 sujetos | Arquitecturas seleccionadas |
-| **8** | Entrenamiento y evaluación final | Resultados A/B/C y figuras | Evaluación independiente completada |
+| **8** | Entrenamiento y evaluación final | Resultados A/B/C/D y figuras | Evaluación independiente completada |
 | **9** | Documentación científica | Tablas, discusión y limitaciones | Resultados reproducibles y auditables |
 
 ### Regla de cierre

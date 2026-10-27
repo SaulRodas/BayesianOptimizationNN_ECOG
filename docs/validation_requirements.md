@@ -211,5 +211,10 @@ Pruebas sintéticas separadas de V01–V14: bloqueo de parámetros finales pendi
 de época exclusivamente en desarrollo, recuperación de checkpoints, ventanas dentro de cada
 bloque en el refit, congelación completa antes de abrir test, rechazo de corrupción/cambios,
 adaptadores MATLAB allowlist, transformación sin reajuste de escaladores y cobertura idéntica
-A/B/C. Ejecutar las celdas portables de 07 en CPU con datos sintéticos y comprobar sus entregables.
+A/B/C. Variante D (v1.4): semillas predefinidas con C como miembro 0; trayectoria B5 guardada
+antes de cada checkpoint, que reproduce su Pearson, también tras una desconexión entre ambas;
+suavizado normalizado que nunca cruza columnas inválidas; σ de mayor Pearson en B5 (el menor en
+un empate); rechazo al congelar de un σ, una trayectoria o una semilla que no coinciden; D igual al
+suavizado del promedio de sus miembros en test, con cada miembro reportado. Ejecutar las celdas
+portables de 07 en CPU con datos sintéticos y comprobar sus entregables.
 Estas pruebas no autorizan evaluación real ni cuentan como evidencia V01–V14 del dataset.

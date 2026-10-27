@@ -349,6 +349,32 @@ def _validate_convergence(data: dict, subjects: list[str]) -> None:
         raise ConfigError(f"{name}.architectures: distinct non-reference stage-2 architectures expected")
 
 
+def _validate_final_evaluation(final: dict) -> None:
+    """A/B/C stay as defined; D (protocol v1.4) is C over predefined seeds plus one smoothing sigma."""
+    if final["variants"] != ["baseline_A", "training_optimized_B", "architecture_optimized_C"]:
+        raise ConfigError("final_evaluation.variants: the predefined A/B/C comparison is fixed")
+    ensemble, name = final["ensemble"], "final_evaluation.ensemble"
+    if (ensemble["name"] != "ensemble_smoothed_D" or ensemble["base_variant"] != "architecture_optimized_C"
+            or ensemble["combination"] != "mean_original_units"):
+        raise ConfigError(f"{name}: D averages C's configuration in original glove units")
+    offsets = ensemble["seed_offsets"]
+    if (not isinstance(offsets, list) or len(offsets) < 2 or any(type(o) is not int or o < 0 for o in offsets)
+            or offsets[0] != 0 or len(set(offsets)) != len(offsets)):
+        raise ConfigError(f"{name}.seed_offsets: distinct nonnegative integers, the first 0 (C itself)")
+    smoothing = ensemble["smoothing"]
+    if (smoothing["kernel"] != "gaussian_normalized_within_valid_runs"
+            or smoothing["selection"] != "max_internal_pearson_smallest_sigma_on_tie"):
+        raise ConfigError(f"{name}.smoothing: Gaussian within valid runs, chosen by internal Pearson")
+    sigmas = smoothing["sigma_samples"]
+    if not isinstance(sigmas, list) or not sigmas:
+        raise ConfigError(f"{name}.smoothing.sigma_samples: expected a nonempty list")
+    for sigma in sigmas:
+        positive(sigma, f"{name}.smoothing.sigma_samples", zero=True)
+    if sigmas[0] != 0 or any(b <= a for a, b in zip(sigmas, sigmas[1:])):
+        raise ConfigError(f"{name}.smoothing.sigma_samples: strictly increasing, starting with 0 (no smoothing)")
+    positive(smoothing["truncate_sigmas"], f"{name}.smoothing.truncate_sigmas")
+
+
 def _validate_verification(verification: dict) -> None:
     if verification["required_test_ids"] != VERIFICATION_IDS:
         raise ConfigError("verification.required_test_ids must list V01-V14")
@@ -402,6 +428,7 @@ def load_config(path: str | Path) -> ExperimentConfig:
         _validate_training_and_metrics(data["training"], data["metrics"])
         _validate_optimization(data["optimization"], data["validation"]["block_names"], len(subjects))
         _validate_convergence(data, subjects)
+        _validate_final_evaluation(data["final_evaluation"])
         _validate_verification(data["verification"])
     except (KeyError, TypeError) as exc:
         raise ConfigError(f"Missing or malformed configuration: {exc}") from exc

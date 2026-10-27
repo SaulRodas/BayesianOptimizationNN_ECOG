@@ -1,6 +1,6 @@
 # TT ECoG.
 
-Decodificación continua de cinco dedos con ECoG y U-Net 1D. Metodología: [protocolo v1.3](docs/protocolo_implementacion.md). Configuración única: `configs/experiment_config.yaml`.
+Decodificación continua de cinco dedos con ECoG y U-Net 1D. Metodología: [protocolo v1.4](docs/protocolo_implementacion.md). Configuración única: `configs/experiment_config.yaml`.
 
 ## Ejecutar en VS Code con kernel Colab.
 
@@ -17,7 +17,8 @@ Decodificación continua de cinco dedos con ECoG y U-Net 1D. Metodología: [prot
    **05_optuna_entrenamiento.ipynb** y después **06_optuna_arquitectura.ipynb**.
 8. Decidir `training.final_max_epochs`, `final_early_stopping_patience` y
    `final_early_stopping_min_delta` con desarrollo. Ejecutar **07_evaluacion_final.ipynb**:
-   B5 para elegir duración → refit de A/B/C con desarrollo completo → congelar → test.
+   B5 para elegir duración y el σ de D → refit de A/B/C y de los miembros de D con desarrollo
+   completo → congelar → test.
    Indicar `paths.test_labels_dir` solo para esta etapa, relativo a `TT_ECoG`.
 
 El esquema 2 genera carpetas nuevas. Las corridas anteriores quedan intactas: no se convierten ni se sobrescriben.
@@ -48,7 +49,7 @@ Datos: `TT_ECoG/data/processed/<pipeline_id>/S*/B*/`; folds: `folds/S*/val_B*/`;
 | `verification`, `tests` | V01–V14 y regresiones sintéticas. |
 | `training` | Actualización AdamW, épocas, validación reconstruida y medición breve de recursos; reutilizable por Optuna. |
 | `optimization` | Propuestas TPE, presupuesto total, recuperación del trial y selección entre etapas. |
-| `final_evaluation` | Política final de duración, parámetros A/B/C e inferencia sin ajuste sobre test. |
+| `final_evaluation` | Política final de duración, parámetros A/B/C, variante D (semillas, promedio y suavizado con σ elegido en B5) e inferencia sin ajuste sobre test. |
 
 `pyproject.toml` permite instalar el paquete; `requirements.txt` contiene las dependencias comunes. `.gitignore` protege datos y resultados; `.gitattributes` elimina salidas de notebooks al commitear. Los JSON conservan información que no está en los arrays: canales, tiempos, configuración, cobertura y procedencia.
 
@@ -100,13 +101,16 @@ pipeline, batch y épocas; la reevaluación vive en el mismo `study.zip` de la e
 Conservar la versión de Optuna al recuperar el sampler y cargar solo archivos propios.
 La persistencia del sampler sigue la [guía oficial de Optuna](https://optuna.readthedocs.io/en/v4.5.0/tutorial/20_recipes/001_rdb.html).
 
-El 07 guarda `results/evaluation/<run_id>/`: plan, procedencia, selección interna, checkpoints
-por sujeto/variante y escaladores comunes por sujeto. Muestra el `run_id`; copiarlo a
-`paths.final_run_id` para reanudar la última época completa. No selecciona la carpeta más reciente.
-`frozen.json` vincula los nueve modelos y las decisiones al mismo `pipeline_id` antes de abrir
-test. Después guarda trayectorias, máscara/cobertura, índices alineados, métricas por dedo y
-sujeto, figuras A/B/C y manifiestos de integridad. Un resultado terminado se reutiliza sin
-reabrir etiquetas. Una interrupción durante test solo permite repetir inferencia con los mismos
-modelos congelados; no elegir otra configuración por su resultado.
+El 07 guarda `results/evaluation/<run_id>/`: plan, procedencia, selección interna (con la
+trayectoria B5 de la época elegida), checkpoints por sujeto/variante y por miembro de D
+(`ensemble_smoothed_D/member_k/`), el σ de D con su tabla de B5 y escaladores comunes por sujeto.
+Muestra el `run_id`; copiarlo a `paths.final_run_id` para reanudar la última época completa. No
+selecciona la carpeta más reciente. `frozen.json` vincula los modelos de A/B/C y los miembros de D,
+el σ de D (recalculado al congelar) y las decisiones al mismo `pipeline_id` antes de abrir test.
+Después guarda trayectorias, máscara/cobertura, índices alineados, métricas por dedo y sujeto,
+figuras A/B/C/D, la tabla de cada miembro de D y su promedio sin suavizar, y manifiestos de
+integridad. Un resultado terminado se reutiliza sin reabrir etiquetas. Una interrupción durante
+test solo permite repetir inferencia con los mismos modelos congelados; no elegir otra
+configuración por su resultado.
 
 V01–V14 requiere datos reales y pruebas sintéticas satisfactorias. La reorganización y sus tests sintéticos no aprueban el pipeline experimental. Las corridas históricas constan en [la bitácora](docs/experimental_log.md). No se ejecutan automáticamente entrenamientos, Optuna ni evaluación real. El acceso a etiquetas de test se limita a la celda final del 07 después de congelar decisiones.
